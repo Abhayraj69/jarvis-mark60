@@ -531,74 +531,72 @@ def computer_control(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "computer_control",
-    "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
+    "description": "Direct input: type, click, hotkeys, scroll, mouse, focus a window, find/click elements on screen. To type into a named app call focus_window first, then type.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"
+                "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data",
             },
             "text": {
                 "type": "STRING",
-                "description": "Text to type or paste"
+                "description": "Text to type or paste",
             },
             "x": {
                 "type": "INTEGER",
-                "description": "X coordinate"
+                "description": "X coordinate",
             },
             "y": {
                 "type": "INTEGER",
-                "description": "Y coordinate"
+                "description": "Y coordinate",
             },
             "keys": {
                 "type": "STRING",
-                "description": "Key combination e.g. 'ctrl+c'"
+                "description": "Key combo, e.g. ctrl+c",
             },
             "key": {
                 "type": "STRING",
-                "description": "Single key e.g. 'enter'"
+                "description": "Single key, e.g. enter",
             },
             "direction": {
                 "type": "STRING",
-                "description": "up | down | left | right"
+                "description": "up | down | left | right",
             },
             "amount": {
                 "type": "INTEGER",
-                "description": "Scroll amount (default: 3)"
+                "description": "Scroll amount (default 3)",
             },
             "seconds": {
                 "type": "NUMBER",
-                "description": "Seconds to wait"
+                "description": "Seconds to wait",
             },
             "title": {
                 "type": "STRING",
-                "description": "Window title for focus_window"
+                "description": "Window title for focus_window",
             },
             "description": {
                 "type": "STRING",
-                "description": "Element description for screen_find/screen_click"
+                "description": "Element description for screen_find/screen_click",
             },
             "type": {
                 "type": "STRING",
-                "description": "Data type for random_data"
+                "description": "Data type for random_data",
             },
             "field": {
                 "type": "STRING",
-                "description": "Field for user_data: name|email|city"
+                "description": "user_data field: name | email | city",
             },
             "clear_first": {
                 "type": "BOOLEAN",
-                "description": "Clear field before typing (default: true)"
+                "description": "Clear field before typing (default true)",
             },
             "path": {
                 "type": "STRING",
-                "description": "Save path for screenshot"
-            }
+                "description": "Screenshot save path",
+            },
         },
-        "required": [
-            "action"
-        ]
+        "required": ["action"],
     },
     "handler": computer_control,
 }

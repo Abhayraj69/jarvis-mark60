@@ -215,67 +215,47 @@ TOOL_DECLARATIONS = [
     # camera stream, memory writes, the monitor engine, and shutdown. All other
     # tools live in their own action file and are auto-discovered by
     # core.action_loader (see JarvisLive.__init__).
+    #
+    # Keep these terse: every character here is sent on every turn, and the
+    # behavioural rules ("say nothing after shutdown", "save silently") live
+    # ONCE in core/prompt.txt, not here. tests/test_tool_budget.py enforces
+    # the size limits.
     {
         "name": "system_status",
-        "description": (
-            "Returns real-time system metrics: CPU usage, RAM, GPU load, CPU temperature, "
-            "uptime, and process count. Use when the user asks about computer performance, "
-            "temperature, memory, or resource usage."
-        ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {},
-        }
+        "description": "Live CPU, RAM, GPU, temperature, uptime and process count.",
+        "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
         "name": "screen_process",
         "description": (
-            "Captures the screen or webcam image and lets you analyze it. "
-            "MUST be called when user asks what is on screen, what you see, "
-            "look at camera, analyze my screen, etc. "
-            "You have NO visual ability without this tool. "
-            "After the image is captured it is sent directly to you — describe what you see and answer the user's question. "
-            "When using camera: the live view stays open until user says close it or calls close_camera."
+            "Capture the screen or webcam so you can see it — you have no vision "
+            "without this. The image is sent to you right after; answer from it."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "angle": {"type": "STRING", "description": "'screen' to capture display, 'camera' for webcam. Default: 'screen'"},
-                "text":  {"type": "STRING", "description": "The question or instruction about the captured image"}
+                "angle": {"type": "STRING", "description": "screen (default) | camera"},
+                "text":  {"type": "STRING", "description": "The question about the image"},
             },
-            "required": ["text"]
-        }
+            "required": ["text"],
+        },
     },
     {
         "name": "close_camera",
-        "description": (
-            "Closes the live camera view shown on screen. "
-            "Call when the user says (in ANY language): close camera, stop camera, "
-            "turn off camera, that's creepy, etc."
-        ),
-        "parameters": {"type": "OBJECT", "properties": {}, "required": []}
+        "description": "Close the live webcam view.",
+        "parameters": {"type": "OBJECT", "properties": {}, "required": []},
     },
     {
         "name": "manage_monitor",
         "description": (
-            "Add, remove, or list background monitoring topics. "
-            "JARVIS checks these topics once a day and alerts the user when there is a new development. "
-            "Use 'add' when the user says 'monitor X', 'track X', 'follow X'. "
-            "Use 'remove' when the user says 'stop monitoring X'. "
-            "Use 'list' when the user asks what is being monitored. "
-            "Do NOT add crypto, financial, or trading topics."
+            "Topics checked once a day for new developments ('monitor X', "
+            "'track X'). No crypto, financial or trading topics."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {
-                    "type":        "STRING",
-                    "description": "add | remove | list",
-                },
-                "topic": {
-                    "type":        "STRING",
-                    "description": "Topic to monitor or stop monitoring (e.g. 'space exploration', 'AI news')",
-                },
+                "action": {"type": "STRING", "description": "add | remove | list"},
+                "topic":  {"type": "STRING", "description": "Topic, e.g. 'AI news'"},
             },
             "required": ["action"],
         },
@@ -283,72 +263,40 @@ TOOL_DECLARATIONS = [
     {
         "name": "shutdown_jarvis",
         "description": (
-            "Goes quiet: stops speaking and stops treating audio or text as commands, "
-            "WITHOUT closing the app. Call this when the user says goodbye, tells you to "
-            "stop, or wants to end the conversation — e.g. 'bye Jarvis' — in ANY language. "
-            "This does NOT exit or shut down the program. JARVIS keeps running in the "
-            "background, muted, with all speech and on-screen activity suspended, and only "
-            "resumes normal conversation once the user says 'Hey Jarvis' again."
+            "Go quiet until 'Hey Jarvis' wakes you: the user says goodbye or "
+            "tells you to stop. Does not close the app."
         ),
-        "parameters": {
-            "type": "OBJECT",
-            "properties": {},
-        }
+        "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
         "name": "save_memory",
         "description": (
-            "Save an important personal fact about the user to long-term memory. "
-            "Call this silently whenever the user reveals something worth remembering: "
-            "name, age, city, job, preferences, hobbies, relationships, projects, or future plans. "
-            "Do NOT call for: weather, reminders, searches, or one-time commands. "
-            "Do NOT announce that you are saving — just call it silently. "
-            "Values must be in English regardless of the conversation language."
+            "Store a durable personal fact: name, city, job, preference, "
+            "relationship, project, plan. Not for one-off commands or searches."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
                 "category": {
                     "type": "STRING",
-                    "description": (
-                        "identity — name, age, birthday, city, job, language, nationality | "
-                        "preferences — favorite food/color/music/film/game/sport, hobbies | "
-                        "projects — active projects, goals, things being built | "
-                        "relationships — friends, family, partner, colleagues | "
-                        "wishes — future plans, things to buy, travel dreams | "
-                        "notes — habits, schedule, anything else worth remembering"
-                    )
+                    "description": "identity | preferences | projects | relationships | wishes | notes",
                 },
-                "key":   {"type": "STRING", "description": "Short snake_case key (e.g. name, favorite_food, sister_name)"},
-                "value": {"type": "STRING", "description": "Concise value in English (e.g. Fatih, pizza, older sister)"},
+                "key":   {"type": "STRING", "description": "snake_case key, e.g. sister_name"},
+                "value": {"type": "STRING", "description": "Concise value, in English"},
             },
-            "required": ["category", "key", "value"]
-        }
+            "required": ["category", "key", "value"],
+        },
     },
     {
         "name": "recall_memory",
         "description": (
-            "Look up a fact you have stored about the user but which is NOT in "
-            "the memory block of your system prompt. "
-            "The prompt lists the keys it did not have room for under "
-            "'[ALSO REMEMBERED]' — if the user asks about anything named there, "
-            "call this FIRST. "
-            "Also call it before saying you do not know something personal, and "
-            "when the user asks what you remember about them (leave query empty "
-            "for everything). "
-            "This is a local file search: it is instant and costs nothing."
+            "Search everything stored about the user, including the "
+            "[ALSO REMEMBERED] keys the prompt had no room for. Local and instant."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "query": {
-                    "type": "STRING",
-                    "description": (
-                        "Keyword to search for — a name, a topic, a category "
-                        "(e.g. 'ayse', 'coffee', 'projects'). "
-                        "Leave empty to list everything stored."
-                    ),
-                },
+                "query": {"type": "STRING", "description": "Name or topic; empty = list all"},
             },
             "required": [],
         },
@@ -356,23 +304,13 @@ TOOL_DECLARATIONS = [
     {
         "name": "undo",
         "description": (
-            "Reverse the last change YOU made to this computer — a file you "
-            "moved, renamed, created or wrote, or a setting you changed such as "
-            "volume, brightness, dark mode or WiFi. "
-            "Call this whenever the user says undo, revert, take it back, put it "
-            "back, cancel that, or tells you that you did the wrong thing, in ANY "
-            "language. "
-            "Use action='list' when they ask what can be undone. "
-            "This only covers your own actions — it is not the Ctrl+Z of whatever "
-            "application is on screen (that is computer_settings with action 'undo')."
+            "Reverse YOUR last change: a file moved/renamed/created/written or a "
+            "setting changed. Not the app's Ctrl+Z (that is computer_settings undo)."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action": {
-                    "type": "STRING",
-                    "description": "undo (default) — reverse the last change | list — show what can be undone",
-                },
+                "action": {"type": "STRING", "description": "undo (default) | list"},
             },
             "required": [],
         },
@@ -842,12 +780,23 @@ class JarvisLive:
     # whenever a caller (e.g. actions/dev_agent.py, once migrated) asks for a
     # policy built from these saved values instead of DEFAULT_POLICY.
     def _routing_settings_section(self) -> dict:
-        from core.backend_router import DEFAULT_POLICY, TaskKind
+        from core.backend_router import DEFAULT_POLICY, TaskKind, load_policy_from_config
         saved = get_plugin_config("routing")
+        # What each task kind will ACTUALLY use right now — after the
+        # local-model gate (a sub-7B Ollama model can't lead an order) and
+        # minus anything unconfigured or in breaker cooldown. Without this,
+        # the raw fields read "ollama, gemini, claude" while every call
+        # quietly went to Gemini, and nobody could tell which one answered.
+        try:
+            note = ("Resolved right now (backends: gemini, gemini_lite, claude, ollama):\n"
+                    + self._describe_routing(load_policy_from_config(saved)))
+        except Exception as e:
+            note = f"(could not resolve routing: {e})"
         return {
             "plugin":    "routing",
             "namespace": "routing",
             "title":     "🧭 ROUTING — backend order per task kind (comma-separated)",
+            "note":      note,
             "fields": [
                 {"key": kind.value, "type": "text", "label": kind.value.replace("_", " ").title(),
                  "default": ", ".join(DEFAULT_POLICY[kind])}
@@ -857,12 +806,19 @@ class JarvisLive:
             "action": {"label": "TEST ALL BACKENDS", "run": self._test_all_backends},
         }
 
+    @staticmethod
+    def _describe_routing(policy) -> str:
+        from core.backend_router import describe_routing
+        return describe_routing(policy)
+
     def _test_all_backends(self, values: dict) -> tuple[bool, str]:
         """Quick health probe for ollama/claude/gemini — independent of the
         saved routing order, since a backend's reachability doesn't depend on
-        which task kinds are configured to use it."""
+        which task kinds are configured to use it — followed by the resolved
+        order for the values currently typed in the fields (saved or not)."""
         import time as _time
         from core import llm_client
+        from core.backend_router import load_policy_from_config
         from core.claude_bridge import get_claude_config, get_claude_settings
 
         results = []
@@ -876,6 +832,12 @@ class JarvisLive:
 
         gemini_key = _load_api_config().get("gemini_api_key", "")
         results.append(f"gemini: {'configured' if gemini_key else 'no API key'}")
+
+        try:
+            results.append("")
+            results.append(self._describe_routing(load_policy_from_config(values or {})))
+        except Exception as e:
+            results.append(f"(could not resolve routing: {e})")
 
         return True, "\n".join(results)
 
@@ -1342,18 +1304,15 @@ class JarvisLive:
         )
 
         # Identity injection — overrides any hardcoded name in prompt.txt
-        _addr = (f"ADDRESS: Always call the user '{_user_name}'."
+        _addr = (f"ADDRESS: Call the user '{_user_name}' — sparingly, at most "
+                 f"once per reply."
                  if _user_name
-                 else "ADDRESS: Address the user with the ordinary respectful form "
-                      "for a superior in the language you are currently speaking — "
-                      "\"sir\" in English, its everyday equivalent in any other "
-                      "language. Never an archaic or aristocratic form, and never "
-                      "the form from a different language than the one you are "
-                      "speaking in this sentence.")
+                 else "ADDRESS: \"sir\" in English, its everyday respectful "
+                      "equivalent in any other language — at most once per reply, "
+                      "and always in the language you are speaking.")
         identity_ctx = (
             f"[IDENTITY]\n"
-            f"Your name is {self._asst_name}. "
-            f"Always refer to yourself as {self._asst_name}.\n"
+            f"You are {self._asst_name}.\n"
             f"{_addr}\n\n"
         )
 
@@ -1375,6 +1334,30 @@ class JarvisLive:
             + self._connector_declarations
         )
 
+    # Defaults for the Live session's context-window compression (see
+    # _build_config). Override per install with
+    #   "live_context": {"trigger_tokens": 12000, "target_tokens": 6000}
+    # in config/api_keys.json. Bounded so a typo can't disable compression
+    # or squeeze the window below what one tool result needs.
+    _CTX_TRIGGER_DEFAULT = 12_000
+    _CTX_TARGET_DEFAULT  = 6_000
+
+    def _live_context_limits(self) -> tuple[int, int]:
+        """(trigger_tokens, target_tokens) for context-window compression."""
+        try:
+            raw = (_load_api_config().get("live_context") or {})
+        except Exception:
+            raw = {}
+        def _num(key, default, lo, hi):
+            try:
+                v = int(raw.get(key, default))
+            except (TypeError, ValueError):
+                v = default
+            return max(lo, min(v, hi))
+        trigger = _num("trigger_tokens", self._CTX_TRIGGER_DEFAULT, 4_000, 120_000)
+        target  = _num("target_tokens",  self._CTX_TARGET_DEFAULT,  2_000, trigger - 1_000)
+        return trigger, target
+
     def _build_config(self) -> types.LiveConnectConfig:
         system_instruction = self._assemble_system_prompt()
 
@@ -1391,9 +1374,18 @@ class JarvisLive:
                 handle=self._resume_handle
             ),
             # Sliding-window compression: session never dies from a full context
-            # window — JARVIS can stay in one conversation for hours
+            # window — JARVIS can stay in one conversation for hours.
+            # trigger/target are set explicitly: with the defaults, compression
+            # only kicked in near the model's limit, so telemetry showed a
+            # median of ~27k input tokens per turn (p90 50k) — most of it
+            # stale history. Compressing at 12k down to 6k keeps every turn
+            # small, which is both faster and measurably better at picking
+            # the right tool. Tunable from api_keys.json "live_context".
             context_window_compression=types.ContextWindowCompressionConfig(
-                sliding_window=types.SlidingWindow(),
+                trigger_tokens=self._live_context_limits()[0],
+                sliding_window=types.SlidingWindow(
+                    target_tokens=self._live_context_limits()[1],
+                ),
             ),
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(

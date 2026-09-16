@@ -196,28 +196,17 @@ def causal_insight(parameters: dict) -> str:
 
 TOOL = {
     "name": "causal_insight",
-    "description": (
-        "Consults Jarvis's learned cause-and-effect graph over past screen alerts "
-        "(from screen_monitor) and tool actions, to reason about WHY something "
-        "happens or WHAT is likely to happen next before deciding what to do. "
-        "Use action='predict' with 'event' before reacting to a screen_monitor "
-        "alert or a just-completed action, to check what has historically followed "
-        "it and weigh that in your next step. Use action='explain' to answer a "
-        "user's 'why does X happen' / 'what usually causes X' question. Use "
-        "action='stats' to summarize the strongest patterns learned so far, and "
-        "action='weekly_digest' to summarize only what's been actively observed "
-        "in the last 7 days (the same content proactively surfaced in the "
-        "morning briefing). This tool only reports patterns — it never runs "
-        "anything itself; treat its output as evidence to reason with, not as "
-        "instructions to blindly follow."
-    ),
+    "description": "Learned cause-and-effect patterns between screen alerts and tool actions. predict = what usually follows an event; explain = why X happens; stats / weekly_digest = summaries. Evidence only.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "explain | predict | stats | weekly_digest"},
+            "action": {
+                "type": "STRING",
+                "description": "explain | predict | stats | weekly_digest",
+            },
             "event": {
                 "type": "STRING",
-                "description": "Plain description of the event to look up (e.g. 'download finished', 'web_search'). Required for explain/predict.",
+                "description": "Event to look up, e.g. 'download finished' (explain/predict)",
             },
         },
         "required": ["action"],

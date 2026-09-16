@@ -192,33 +192,25 @@ def screen_monitor(parameters: dict, speak=None) -> str:
 
 TOOL = {
     "name": "screen_monitor",
-    "description": (
-        "Continuously watches the screen in the background for a specific condition, "
-        "checking on a timer instead of a single one-off look. Use action='start' when "
-        "the user asks to be watched/alerted/notified about something appearing on "
-        "screen (e.g. 'tell me when this download finishes', 'let me know if an error "
-        "pops up', 'watch for a new Slack message') — pass 'watch_for' describing the "
-        "condition in plain language, and optionally 'interval_seconds' (how often to "
-        f"check, default {_DEFAULT_INTERVAL_S}) and 'duration_minutes' (0 or omitted = "
-        "runs until stopped). Use action='stop' to end the current watch, and "
-        "action='status' to report what is being watched and how it's going. "
-        "Only one watch can run at a time; starting a new one replaces the old one."
-    ),
+    "description": "Background watch of the screen for one condition on a timer, e.g. 'tell me when the download finishes'. Only one watch at a time; start only when explicitly asked.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
-            "action": {"type": "STRING", "description": "start | stop | status"},
+            "action": {
+                "type": "STRING",
+                "description": "start | stop | status",
+            },
             "watch_for": {
                 "type": "STRING",
-                "description": "Plain-language description of what to detect on screen (start only).",
+                "description": "Condition to detect, in plain language (start)",
             },
             "interval_seconds": {
                 "type": "INTEGER",
-                "description": f"Seconds between checks, {_MIN_INTERVAL_S}-{_MAX_INTERVAL_S} (default {_DEFAULT_INTERVAL_S}).",
+                "description": "Seconds between checks, 5-600 (default 30)",
             },
             "duration_minutes": {
                 "type": "INTEGER",
-                "description": f"How long to watch, in minutes, up to {_MAX_DURATION_MIN}. 0 = until stopped.",
+                "description": "Minutes to watch, up to 240; 0 = until stopped",
             },
         },
         "required": ["action"],

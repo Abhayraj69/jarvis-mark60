@@ -169,68 +169,40 @@ def manage_sequence(parameters: dict, speak=None, dispatch=None) -> str:
 
 TOOL = {
     "name": "manage_sequence",
-    "description": (
-        "Save, record, replay, parametrize, list, inspect, or delete a named "
-        "multi-step action sequence ('macro'). Two ways to create one: "
-        "action='save' when the user dictates the steps up front ('remember these "
-        "steps as X') — pass 'name' and 'steps' (a list of {tool, args} objects, "
-        "in order; you decide them from the tools available or what was just done "
-        "in this conversation); or action='record_start' when the user says "
-        "'record this as X' / 'start recording' — every tool call made from then "
-        "on becomes a step automatically, until action='record_stop' ('stop "
-        "recording') saves it or action='record_discard' throws it away. "
-        "Use action='run' (or 'recall'/'replay') when the user says 'run X', 'do "
-        "my X routine', or 'run X with file=Y' — this replays every saved step; "
-        "pass 'params' (an object) to fill in any {placeholder} values a step's "
-        "args contain, e.g. {\"file\": \"report.pdf\"}. Use action='parametrize' "
-        "to turn an already-saved literal value into a {placeholder} for future "
-        "replays — pass 'name', 'value' (the exact text to replace), and "
-        "'placeholder' (its new name). Use action='list' to see saved sequence "
-        "names, action='show' to see one sequence's steps, and action='delete' to "
-        "remove one. Sequences persist permanently until explicitly deleted."
-    ),
+    "description": "Persistent named multi-step macros. save = user dictates steps; record_start/record_stop = capture your tool calls live; run = replay, params fill {placeholder}s; parametrize = literal to placeholder.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": ("save | record_start | record_stop | record_discard | "
-                                 "run | recall | replay | parametrize | list | show | delete"),
+                "description": "save | record_start | record_stop | record_discard | run | recall | replay | parametrize | list | show | delete",
             },
             "name": {
                 "type": "STRING",
-                "description": ("The sequence's name (required for everything except "
-                                 "record_stop/record_discard/list, which act on whatever "
-                                 "recording is currently in progress or on all saved sequences)."),
+                "description": "Macro name (not needed for record_stop/record_discard/list)",
             },
             "description": {
                 "type": "STRING",
-                "description": "Optional one-line description of what the sequence does (save/record_start only).",
+                "description": "One-line purpose (save/record_start)",
             },
             "steps": {
                 "type": "ARRAY",
-                "description": (
-                    "Ordered list of steps to save, each an object with 'tool' "
-                    "(the exact tool name to call), 'args' (its parameters object), "
-                    "and optionally 'note' (why this step exists). Required for save."
-                ),
-                "items": {"type": "OBJECT"},
+                "description": "Ordered [{tool, args, note?}] for save",
+                "items": {
+                    "type": "OBJECT",
+                },
             },
             "params": {
                 "type": "OBJECT",
-                "description": (
-                    "Values to fill in for any {placeholder} in the sequence's step "
-                    "args, e.g. {\"file\": \"report.pdf\"} for a step using \"{file}\". "
-                    "Only used by run/recall/replay."
-                ),
+                "description": "Placeholder values for run, e.g. {\"file\": \"a.pdf\"}",
             },
             "value": {
                 "type": "STRING",
-                "description": "The exact literal text to replace with a placeholder (parametrize only).",
+                "description": "Literal text to replace (parametrize)",
             },
             "placeholder": {
                 "type": "STRING",
-                "description": "The new placeholder name, e.g. 'file' or 'city' (parametrize only).",
+                "description": "New placeholder name (parametrize)",
             },
         },
         "required": ["action"],

@@ -340,28 +340,24 @@ def reminder(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "reminder",
-    "description": "Sets a timed reminder using Task Scheduler.",
+    "description": "Schedule an OS-native reminder notification at a date and time.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "date": {
                 "type": "STRING",
-                "description": "Date in YYYY-MM-DD format"
+                "description": "YYYY-MM-DD",
             },
             "time": {
                 "type": "STRING",
-                "description": "Time in HH:MM format (24h)"
+                "description": "HH:MM, 24h",
             },
             "message": {
                 "type": "STRING",
-                "description": "Reminder message text"
-            }
+                "description": "Reminder text",
+            },
         },
-        "required": [
-            "date",
-            "time",
-            "message"
-        ]
+        "required": ["date", "time", "message"],
     },
     "handler": reminder,
 }

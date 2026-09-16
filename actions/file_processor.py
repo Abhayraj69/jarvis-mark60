@@ -855,80 +855,80 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "file_processor",
-    "description": "Processes any file that the user has uploaded or dropped onto the interface. Use this when the user refers to an uploaded file and wants an action on it. Supports: images (describe/ocr/resize/compress/convert), PDFs (summarize/extract_text/to_word), Word docs & text files (summarize/fix/reformat/translate), CSV/Excel (analyze/stats/filter/sort/convert), JSON/XML (validate/format/analyze), code files (explain/review/fix/optimize/run/document/test), audio (transcribe/trim/convert/info), video (trim/extract_audio/extract_frame/compress/transcribe/info), archives (list/extract), presentations (summarize/extract_text). ALWAYS call this tool when a file has been uploaded and the user gives a command about it. If the user's command is ambiguous, pick the most logical action for that file type.",
+    "description": "Act on a file the user uploaded or dropped on the HUD: images, PDF, Word/text, CSV/Excel, JSON, code, audio, video, archives, slides. Pick the most logical action for the file type.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "file_path": {
                 "type": "STRING",
-                "description": "Full path to the uploaded file. Leave empty to use the currently uploaded file."
+                "description": "Path of the file; empty = current upload",
             },
             "action": {
                 "type": "STRING",
-                "description": "What to do with the file. Examples by type:\nimage: describe | ocr | resize | compress | convert | info\npdf: summarize | extract_text | to_word | info\ndocx/txt: summarize | fix | reformat | translate_hint | word_count | to_bullet\ncsv/excel: analyze | stats | filter | sort | convert | info\njson: validate | format | analyze | to_csv\ncode: explain | review | fix | optimize | run | document | test\naudio: transcribe | trim | convert | info\nvideo: trim | extract_audio | extract_frame | compress | transcribe | info | convert\narchive: list | extract\npptx: summarize | extract_text | analyze"
+                "description": "image: describe|ocr|resize|compress|convert|info; pdf: summarize|extract_text|to_word|info; docx/txt: summarize|fix|reformat|translate_hint|word_count|to_bullet; csv/xlsx: analyze|stats|filter|sort|convert|info; json: validate|format|analyze|to_csv; code: explain|review|fix|optimize|run|document|test; audio: transcribe|trim|convert|info; video: trim|extract_audio|extract_frame|compress|transcribe|info|convert; archive: list|extract; pptx: summarize|extract_text|analyze",
             },
             "instruction": {
                 "type": "STRING",
-                "description": "Free-form instruction if action doesn't cover it. E.g. 'translate this to Turkish', 'find all email addresses'"
+                "description": "Free-form request when no action fits",
             },
             "format": {
                 "type": "STRING",
-                "description": "Target format for conversion. E.g. 'mp3', 'pdf', 'csv', 'png'"
+                "description": "Target format for convert, e.g. mp3, pdf, png",
             },
             "width": {
                 "type": "INTEGER",
-                "description": "Target width for image resize"
+                "description": "Resize width",
             },
             "height": {
                 "type": "INTEGER",
-                "description": "Target height for image resize"
+                "description": "Resize height",
             },
             "scale": {
                 "type": "NUMBER",
-                "description": "Scale factor for image resize (e.g. 0.5)"
+                "description": "Resize scale factor, e.g. 0.5",
             },
             "quality": {
                 "type": "INTEGER",
-                "description": "Quality 1-100 for image/video compress"
+                "description": "Compress quality 1-100",
             },
             "start": {
                 "type": "STRING",
-                "description": "Start time for trim: seconds or HH:MM:SS"
+                "description": "Trim start: seconds or HH:MM:SS",
             },
             "end": {
                 "type": "STRING",
-                "description": "End time for trim: seconds or HH:MM:SS"
+                "description": "Trim end: seconds or HH:MM:SS",
             },
             "timestamp": {
                 "type": "STRING",
-                "description": "Timestamp for video frame extraction HH:MM:SS"
+                "description": "Frame time HH:MM:SS for extract_frame",
             },
             "column": {
                 "type": "STRING",
-                "description": "Column name for CSV filter/sort"
+                "description": "CSV column for filter/sort",
             },
             "value": {
                 "type": "STRING",
-                "description": "Filter value for CSV filter"
+                "description": "CSV filter value",
             },
             "condition": {
                 "type": "STRING",
-                "description": "Filter condition: equals|contains|gt|lt"
+                "description": "equals | contains | gt | lt (filter)",
             },
             "ascending": {
                 "type": "BOOLEAN",
-                "description": "Sort order for CSV sort (default: true)"
+                "description": "CSV sort order (default true)",
             },
             "save": {
                 "type": "BOOLEAN",
-                "description": "Save result to file (default: true)"
+                "description": "Save result to file (default true)",
             },
             "destination": {
                 "type": "STRING",
-                "description": "Output folder for archive extract"
-            }
+                "description": "Output folder for archive extract",
+            },
         },
-        "required": []
+        "required": [],
     },
     "handler": file_processor,
 }

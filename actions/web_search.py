@@ -311,33 +311,31 @@ def web_search(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "web_search",
-    "description": "Searches the web. Use for ANY question about current facts, events, prices, or topics — always prefer this over guessing. Modes: 'search' (default), 'news' (latest headlines on a topic), 'research' (deep comprehensive answer), 'price' (product cost lookup), 'compare' (side-by-side comparison of items).",
+    "description": "Web search for anything current or factual you are not sure of. Modes: search, news (headlines), research (deep answer), price (product cost), compare (side by side).",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "query": {
                 "type": "STRING",
-                "description": "Search query or topic"
+                "description": "Query or topic",
             },
             "mode": {
                 "type": "STRING",
-                "description": "search | news | research | price | compare"
+                "description": "search | news | research | price | compare",
             },
             "items": {
                 "type": "ARRAY",
+                "description": "Items to compare (compare mode)",
                 "items": {
-                    "type": "STRING"
+                    "type": "STRING",
                 },
-                "description": "Items to compare (compare mode)"
             },
             "aspect": {
                 "type": "STRING",
-                "description": "Comparison aspect: price | specs | reviews | features"
-            }
+                "description": "price | specs | reviews | features (compare)",
+            },
         },
-        "required": [
-            "query"
-        ]
+        "required": ["query"],
     },
     "handler": web_search,
 }

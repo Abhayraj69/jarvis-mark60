@@ -458,13 +458,7 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
             print(f"[Code] ⚠️ Could not read file: {err}")
 
     try:
-        from google import genai
-        from google.genai import types
-
-        client = genai.Client(api_key=_get_api_key())
-
         image_bytes  = screenshot_path.read_bytes()
-        image_base64 = _image_to_base64(screenshot_path)
 
         user_question = description or "What error or problem do you see on the screen? How can it be fixed?"
 
@@ -484,17 +478,18 @@ Please:
 
 Be specific and actionable. If you see an error message, quote it exactly."""
 
-        contents = [
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-            analysis_prompt,
-        ]
-
-        response = client.models.generate_content(
-            model="gemini-flash-latest",
-            contents=contents,
+        # Routed as TaskKind.VISION (Gemini Flash, Flash-Lite fallback) via
+        # core/backend_router.py so this respects the ROUTING settings and
+        # the router's circuit breaker like every other one-shot call.
+        from core.backend_router import complete
+        from memory.config_manager import get_plugin_config
+        result = complete(
+            TaskKind.VISION,
+            [{"role": "user", "content": analysis_prompt}],
+            images=[(image_bytes, "image/png")],
+            policy=load_policy_from_config(get_plugin_config("routing")),
         )
-
-        analysis = response.text.strip()
+        analysis = (result.get("content") or "").strip()
         print(f"[Code] ✅ Screen analysis complete")
 
         try:
@@ -589,46 +584,44 @@ def code_helper(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "code_helper",
-    "description": "Writes, edits, explains, runs, or builds code files.",
+    "description": "Write, edit, explain, run or build a single code file.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "write | edit | explain | run | build | auto (default: auto)"
+                "description": "write | edit | explain | run | build | auto (default auto)",
             },
             "description": {
                 "type": "STRING",
-                "description": "What the code should do or what change to make"
+                "description": "What the code should do or the change to make",
             },
             "language": {
                 "type": "STRING",
-                "description": "Programming language (default: python)"
+                "description": "Language (default python)",
             },
             "output_path": {
                 "type": "STRING",
-                "description": "Where to save the file"
+                "description": "Where to save",
             },
             "file_path": {
                 "type": "STRING",
-                "description": "Path to existing file for edit/explain/run/build"
+                "description": "Existing file for edit/explain/run/build",
             },
             "code": {
                 "type": "STRING",
-                "description": "Raw code string for explain"
+                "description": "Raw code for explain",
             },
             "args": {
                 "type": "STRING",
-                "description": "CLI arguments for run/build"
+                "description": "CLI args for run/build",
             },
             "timeout": {
                 "type": "INTEGER",
-                "description": "Execution timeout in seconds (default: 30)"
-            }
+                "description": "Seconds (default 30)",
+            },
         },
-        "required": [
-            "action"
-        ]
+        "required": ["action"],
     },
     "handler": code_helper,
 }

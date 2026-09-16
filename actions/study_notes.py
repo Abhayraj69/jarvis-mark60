@@ -118,28 +118,21 @@ def study_notes(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ─────────────
 TOOL = {
     "name": "study_notes",
-    "description": (
-        "Captures the screen, reads the study material on it (textbook page, "
-        "slide, article, code, diagram), and generates concise structured "
-        "notes. Call when the user asks to take notes on what's on screen, "
-        "summarize this material, or make study notes. Does NOT require a "
-        "prior screen_process call — it captures its own screenshot. Saves "
-        "the notes to a text file."
-    ),
+    "description": "Capture the screen once, extract structured study notes from the material on it, and save them to a file. Needs no prior screen_process call.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "topic_hint": {
                 "type": "STRING",
-                "description": "What the material is about, if the user said it (helps focus the notes)",
+                "description": "What the material is about",
             },
             "save_path": {
                 "type": "STRING",
-                "description": "Where to save, e.g. 'desktop', 'documents', or a full path. Default: desktop/JarvisNotes",
+                "description": "desktop, documents, or a full path (default desktop/JarvisNotes)",
             },
             "open_notepad": {
                 "type": "BOOLEAN",
-                "description": "Open the saved notes in Notepad after writing. Default: true",
+                "description": "Open the saved notes (default true)",
             },
         },
         "required": [],

@@ -96,17 +96,7 @@ def _safe_int(value, default: int) -> int:
 # ── Tool declaration (auto-discovered by core/action_loader.py) ─────────────
 TOOL = {
     "name": "study_progress",
-    "description": (
-        "Tracks quiz performance across sessions, since the live quiz "
-        "conversation itself does not persist. Actions: 'log_result' (call "
-        "once right after YOU grade each quiz answer, so it's remembered "
-        "for next time — pass topic, question, correct_answer, user_answer, "
-        "and correct); 'weak_topics' (topics the user gets wrong most, for "
-        "'what should I review'); 'missed_questions' (previously missed "
-        "questions, to requiz on them); 'stats' (overall accuracy); 'clear' "
-        "(erase all stored quiz history, if the user asks to reset/forget "
-        "their progress)."
-    ),
+    "description": "Persistent quiz history. log_result after grading each answer; weak_topics / missed_questions / stats to review; clear only on explicit request.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -116,27 +106,27 @@ TOOL = {
             },
             "topic": {
                 "type": "STRING",
-                "description": "Subject of the question, e.g. the notes' topic_hint. Optional.",
+                "description": "Subject of the question",
             },
             "question": {
                 "type": "STRING",
-                "description": "The quiz question text (required for log_result).",
+                "description": "Question text (log_result)",
             },
             "correct_answer": {
                 "type": "STRING",
-                "description": "The correct answer (for log_result).",
+                "description": "Correct answer (log_result)",
             },
             "user_answer": {
                 "type": "STRING",
-                "description": "What the user actually said (for log_result).",
+                "description": "What the user said (log_result)",
             },
             "correct": {
                 "type": "BOOLEAN",
-                "description": "Whether the user's answer was graded correct (for log_result).",
+                "description": "Graded correct? (log_result)",
             },
             "limit": {
                 "type": "INTEGER",
-                "description": "Max results for weak_topics/missed_questions. Default: 5/10.",
+                "description": "Max results (default 5/10)",
             },
         },
         "required": ["action"],

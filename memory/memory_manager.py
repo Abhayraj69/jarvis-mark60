@@ -229,8 +229,8 @@ def format_memory_for_prompt(memory: dict | None) -> str:
             # English" line written months ago reads like a standing order and
             # was one of the reasons a Turkish question came back in English.
             core_lines.append(
-                f"Has spoken to you in: {val} (an observation about the past — "
-                f"always answer in the language of their CURRENT message)")
+                f"Has spoken to you in: {val} (past observation only — "
+                f"reply in the language of their current message)")
         else:
             core_lines.append(f"{field.title()}: {val}")
     for key, entry in identity.items():
@@ -299,7 +299,7 @@ def format_memory_for_prompt(memory: dict | None) -> str:
         return ""
 
     out = [
-        "[WHAT YOU KNOW ABOUT THIS PERSON — use naturally, never recite like a list]",
+        "[ABOUT THE USER — known quietly, as a long-serving aide would; never recited]",
         *core_lines,
     ]
 
@@ -314,8 +314,7 @@ def format_memory_for_prompt(memory: dict | None) -> str:
         if names:
             out.append("")
             out.append(
-                "[ALSO REMEMBERED — values not shown here. Call recall_memory "
-                "with a keyword to read any of these before saying you do not know]"
+                "[ALSO REMEMBERED — not shown here; recall_memory reads any of these]"
             )
             out.append(", ".join(names)
                        + (f" (+{len(indexed) - len(names)} more)"

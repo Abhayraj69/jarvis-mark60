@@ -15,6 +15,7 @@ import json
 import re
 
 from actions.screen_processor import _text_query
+from core.backend_router import TaskKind
 from actions.study_notes import get_last_notes, _capture_and_extract_notes
 
 _QUIZ_PROMPT = (
@@ -83,7 +84,10 @@ def study_quiz(
     prompt = _QUIZ_PROMPT.format(count=question_count, difficulty=difficulty, notes=notes_text)
 
     try:
-        raw = _text_query(prompt)
+        # TaskKind.CHAT: question writing needs the strongest text backend
+        # available (Gemini Flash / Claude), not the Flash-Lite model this
+        # used to hardcode — see core/backend_router.py DEFAULT_POLICY.
+        raw = _text_query(prompt, kind=TaskKind.CHAT)
     except Exception as e:
         return f"Could not generate quiz questions: {e}"
 
@@ -101,24 +105,17 @@ def study_quiz(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ─────────────
 TOOL = {
     "name": "study_quiz",
-    "description": (
-        "Generates quiz questions from the last study notes (or a fresh "
-        "screen capture if none exist yet) and returns them WITH answers "
-        "for you to ask the user one at a time. Call when the user asks to "
-        "be quizzed or tested on the material. After calling this, ask the "
-        "questions yourself in the conversation — do not just read the "
-        "tool's output aloud verbatim."
-    ),
+    "description": "Generate quiz questions WITH answers from the last study notes (or a fresh screen capture). Returns the whole set for you to ask one at a time.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "question_count": {
                 "type": "INTEGER",
-                "description": "How many questions to generate (1-15). Default: 5",
+                "description": "1-15 (default 5)",
             },
             "difficulty": {
                 "type": "STRING",
-                "description": "easy | medium | hard. Default: medium",
+                "description": "easy | medium | hard (default medium)",
             },
         },
         "required": [],

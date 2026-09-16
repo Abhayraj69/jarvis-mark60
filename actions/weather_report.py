@@ -54,18 +54,16 @@ def _log(message: str, player=None) -> None:
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "weather_report",
-    "description": "Gives the weather report to user",
+    "description": "Current weather for a city.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "city": {
                 "type": "STRING",
-                "description": "City name"
-            }
+                "description": "City name",
+            },
         },
-        "required": [
-            "city"
-        ]
+        "required": ["city"],
     },
     "handler": weather_action,
 }

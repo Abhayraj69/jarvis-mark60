@@ -600,30 +600,28 @@ def dev_agent(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "dev_agent",
-    "description": "Builds complete multi-file projects from scratch: plans, writes files, installs deps, opens VSCode, runs and fixes errors.",
+    "description": "Build a complete multi-file project: plan, write files, install deps, open VS Code, run and fix errors. For single files use code_helper.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "description": {
                 "type": "STRING",
-                "description": "What the project should do"
+                "description": "What the project should do",
             },
             "language": {
                 "type": "STRING",
-                "description": "Programming language (default: python)"
+                "description": "Language (default python)",
             },
             "project_name": {
                 "type": "STRING",
-                "description": "Optional project folder name"
+                "description": "Optional folder name",
             },
             "timeout": {
                 "type": "INTEGER",
-                "description": "Run timeout in seconds (default: 30)"
-            }
+                "description": "Run timeout seconds (default 30)",
+            },
         },
-        "required": [
-            "description"
-        ]
+        "required": ["description"],
     },
     "handler": dev_agent,
 }

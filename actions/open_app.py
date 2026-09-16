@@ -341,22 +341,20 @@ def open_app(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "open_app",
-    "description": "Opens any application on the computer. Use this whenever the user asks to open, launch, or start any app, website, or program. Always call this tool — never just say you opened it.",
+    "description": "Open, launch or start any application or program, optionally with a file. Always call it; never just say it is open.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "app_name": {
                 "type": "STRING",
-                "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
+                "description": "App name, e.g. Chrome, Spotify, Notepad",
             },
             "file_path": {
                 "type": "STRING",
-                "description": "Optional: full path of a file to open with the app (e.g. open Notepad with a specific .txt file), instead of launching it blank."
-            }
+                "description": "Optional file to open with the app",
+            },
         },
-        "required": [
-            "app_name"
-        ]
+        "required": ["app_name"],
     },
     "handler": open_app,
 }

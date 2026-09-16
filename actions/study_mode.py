@@ -27,6 +27,13 @@ from actions.screen_processor import _capture_screen, _vision_query
 from actions.study_notes import _NOTES_PROMPT
 from actions.file_controller import _resolve_path
 from core.adaptive_poll import AdaptiveInterval
+from core.backend_router import TaskKind
+
+# The timed loop is the ONE place Flash-Lite stays the first choice: it can
+# fire hundreds of times in a study session, and the notes it writes are
+# incremental. One-shot study_notes / study_quiz captures go through the
+# router's default VISION order (Flash first) instead.
+_BACKGROUND_VISION_POLICY = {TaskKind.VISION: ["gemini_lite", "gemini"]}
 
 _MIN_INTERVAL = 30
 _MAX_INTERVAL = 600
@@ -72,7 +79,8 @@ def _run_loop(stop_event: threading.Event, interval: int, file_path: Path, topic
             prompt = _NOTES_PROMPT
             if topic_hint:
                 prompt += f"\n\nThe user says this material is about: {topic_hint}."
-            notes_text = _vision_query(image_bytes, mime_type, prompt)
+            notes_text = _vision_query(image_bytes, mime_type, prompt,
+                                       policy=_BACKGROUND_VISION_POLICY)
 
             if notes_text and notes_text.strip().upper() != "NO_CONTENT" \
                     and notes_text.strip() != last_notes.strip():
@@ -190,17 +198,7 @@ def study_mode(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ─────────────
 TOOL = {
     "name": "study_mode",
-    "description": (
-        "Turns continuous background screen-watching for studying on or "
-        "off. UNLIKE study_notes/study_quiz, this keeps re-reading the "
-        "screen on a timer instead of once — call action='start' ONLY when "
-        "the user explicitly asks for this (e.g. 'watch my screen while I "
-        "study', 'turn on study mode', 'keep taking notes as I go'). NEVER "
-        "start it on your own initiative or as a side effect of a one-off "
-        "study_notes/study_quiz request. Call action='stop' when they ask "
-        "to turn it off, and action='status' to check if it's running. "
-        "Always say out loud, briefly, when you start or stop it."
-    ),
+    "description": "Continuous timed screen capture for studying (OFF by default). start only on an explicit request like 'watch my screen while I study'; stop when asked or when the session ends.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -210,15 +208,15 @@ TOOL = {
             },
             "interval_seconds": {
                 "type": "INTEGER",
-                "description": f"Seconds between captures, for 'start'. {_MIN_INTERVAL}-{_MAX_INTERVAL}. Default: {_DEFAULT_INTERVAL}",
+                "description": "Seconds between captures, 30-600 (default 90)",
             },
             "topic_hint": {
                 "type": "STRING",
-                "description": "What the user is studying, if they said it (for 'start').",
+                "description": "What the user is studying",
             },
             "save_path": {
                 "type": "STRING",
-                "description": "Where to save the running notes file, for 'start'. Default: desktop/JarvisNotes",
+                "description": "Notes folder (default desktop/JarvisNotes)",
             },
         },
         "required": ["action"],

@@ -440,32 +440,32 @@ def youtube_video(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "youtube_video",
-    "description": "Controls YouTube. Use for: playing videos, summarizing a video's content, getting video info, or showing trending videos.",
+    "description": "YouTube: play a video (any 'open/play a video' request), summarize one, get info, or list trending.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "play | summarize | get_info | trending (default: play)"
+                "description": "play | summarize | get_info | trending (default play)",
             },
             "query": {
                 "type": "STRING",
-                "description": "Search query for play action"
+                "description": "Search query for play",
             },
             "save": {
                 "type": "BOOLEAN",
-                "description": "Save summary to Notepad (summarize only)"
+                "description": "Save summary to Notepad",
             },
             "region": {
                 "type": "STRING",
-                "description": "Country code for trending e.g. TR, US"
+                "description": "Country code for trending, e.g. US",
             },
             "url": {
                 "type": "STRING",
-                "description": "Video URL for get_info action"
-            }
+                "description": "Video URL for get_info",
+            },
         },
-        "required": []
+        "required": [],
     },
     "handler": youtube_video,
 }

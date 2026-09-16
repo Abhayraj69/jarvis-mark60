@@ -2479,6 +2479,17 @@ class PluginSettingsOverlay(QWidget):
         form.addSpacing(4)
         form.addWidget(self._lbl(title, 10, True, C.PRI))
 
+        # Optional read-only note under the title (multi-line, monospace) —
+        # used by sections whose *effective* state differs from the raw
+        # fields, e.g. ROUTING showing which backend each task kind really
+        # resolves to after the local-model gate.
+        note = sec.get("note")
+        if note:
+            nl = self._lbl(str(note), 8, color=C.TEXT_MED)
+            nl.setWordWrap(True)
+            nl.setTextFormat(Qt.TextFormat.PlainText)
+            form.addWidget(nl)
+
         for field in fields:
             if not isinstance(field, dict) or not field.get("key"):
                 continue
