@@ -76,6 +76,17 @@ CREATE TABLE IF NOT EXISTS tool_spans (
     duration_ms REAL    NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tool_spans_turn_id ON tool_spans(turn_id);
+
+-- A tool returned ok=false and nothing JARVIS said afterwards admitted it
+-- (see core/result_contract.py FalseSuccessTracker). Its own table rather
+-- than a turns column because the admission, when it comes, often lands in
+-- a later turn than the tool call.
+CREATE TABLE IF NOT EXISTS false_successes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT    NOT NULL,
+    tools       TEXT    NOT NULL,
+    spoken      TEXT    NOT NULL
+);
 """
 
 
@@ -130,6 +141,21 @@ class Turn:
             yield
         finally:
             self._tool_spans.append((name, (time.monotonic() - t0) * 1000))
+
+    def add_tool_span(self, name: str, duration_ms: float) -> None:
+        """Record an already-measured span — for work that ran outside the
+        receive loop (a background `think` call) whose label is only known
+        once it finishes (e.g. "think:claude"). If the turn has already been
+        written, the span is attached to the latest stored turn instead so it
+        is never lost (see record_late_span)."""
+        if self._finished:
+            record_late_span(name, duration_ms, db_path=self._db_path)
+            return
+        self._tool_spans.append((name, float(duration_ms)))
+
+    @property
+    def finished(self) -> bool:
+        return self._finished
 
     def tokens(self, tokens_in: Optional[int] = None, tokens_out: Optional[int] = None) -> None:
         if tokens_in is not None:
@@ -189,6 +215,50 @@ def start_turn(backend: str, db_path: Optional[Path] = None) -> Turn:
     return Turn(backend, db_path)
 
 
+def record_late_span(name: str, duration_ms: float, db_path: Optional[Path] = None) -> None:
+    """Attach a span to the most recently written turn — for background work
+    (a `think` call) that outlives the turn it started in. Off-thread,
+    best-effort."""
+    def _do():
+        try:
+            with _lock:
+                conn = _connect(db_path)
+                try:
+                    row = conn.execute("SELECT id FROM turns ORDER BY id DESC LIMIT 1").fetchone()
+                    if row is None:
+                        return
+                    conn.execute(
+                        "INSERT INTO tool_spans (turn_id, tool_name, duration_ms) VALUES (?, ?, ?)",
+                        (row["id"], name, float(duration_ms)),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+        except Exception as e:
+            print(f"[Telemetry] late span write failed (non-fatal): {e}")
+    threading.Thread(target=_do, daemon=True).start()
+
+
+def record_false_success(tools: list[str], spoken: str, db_path: Optional[Path] = None) -> None:
+    """Persist one hallucinated-success event. Off-thread and best-effort,
+    like Turn.finish(): never raises into the session loop."""
+    def _do():
+        try:
+            with _lock:
+                conn = _connect(db_path)
+                try:
+                    conn.execute(
+                        "INSERT INTO false_successes (ts, tools, spoken) VALUES (?, ?, ?)",
+                        (datetime.now().isoformat(timespec="seconds"), ",".join(tools), spoken[:1000]),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+        except Exception as e:
+            print(f"[Telemetry] false_success write failed (non-fatal): {e}")
+    threading.Thread(target=_do, daemon=True).start()
+
+
 def _percentile(sorted_vals: list[float], pct: float) -> Optional[float]:
     if not sorted_vals:
         return None
@@ -236,6 +306,16 @@ def summary(days: int = 7, db_path: Optional[Path] = None) -> dict:
         ).fetchall()
         tools = {r["tool_name"]: {"avg_ms": r["avg_ms"], "count": r["n"]} for r in tool_rows}
 
-        return {"days": days, "backends": backends, "tools": tools}
+        fs_rows = conn.execute(
+            "SELECT tools FROM false_successes WHERE ts >= ?", (cutoff,)
+        ).fetchall()
+        false_by_tool: dict[str, int] = {}
+        for r in fs_rows:
+            for t in (r["tools"] or "").split(","):
+                if t:
+                    false_by_tool[t] = false_by_tool.get(t, 0) + 1
+
+        return {"days": days, "backends": backends, "tools": tools,
+                "false_successes": {"count": len(fs_rows), "by_tool": false_by_tool}}
     finally:
         conn.close()

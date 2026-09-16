@@ -10,6 +10,8 @@ below is backed by a file/line or a number from `memory/telemetry.db`.
 | 1.1 token diet | **done** (branch `feat/phase1-fast-brain`) | static per-turn payload 43,979 → 25,613 chars (tool JSON 31,987 → 21,985; prompt.txt 11,992 → 3,628); history now compressed at 12k → 6k tokens; guarded by `tests/test_tool_budget.py` |
 | 1.3 per-task routing | **done** | screen reads / notes / quiz / screen-debug go through `backend_router` (Flash first, Flash-Lite fallback; Flash-Lite only for study_mode's timed loop); sub-7B Ollama models can no longer answer before a configured cloud backend; one retry on 503/429 before the breaker trips; ROUTING settings show the resolved order |
 | 3.1 prompt rewrite | **done** | persona-first `core/prompt.txt` with 5 examples and one copy of each rule; identity/address lines in the same register; guarded by `tests/test_prompt_quality.py` |
+| 2.1 `think` tool | **done** | NON_BLOCKING `think` tool → `core/think.py` builds memory + context bundle + last 6 turns (+ optional screenshot), streams from `backend_router.complete_stream` (Gemini Flash → Claude → Flash-Lite → Ollama), first sentences delivered as a WHEN_IDLE FunctionResponse, remainder as one follow-up turn after speech ends; span logged as `think:<backend>`; `ANTHROPIC_API_KEY` env var enables Claude |
+| 2.2 result contract | **done** | every tool result is `{ok, summary, detail}` (`core/result_contract.py`); ok=false tools are tracked and, if JARVIS's following speech never admits the failure, a row lands in `telemetry.db false_successes` (shown in PERFORMANCE → REFRESH STATS) |
 | everything else | not started | — |
 
 Next: run JARVIS for a day, then run Prompt 0.1 (bench) and compare tokens_in / total_ms against the baseline table below.

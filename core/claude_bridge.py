@@ -79,14 +79,28 @@ def get_claude_config() -> dict:
     return _load_config()
 
 
+def _env_api_key() -> str:
+    import os
+    return (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
+
+
 def is_claude_engine_enabled(cfg: dict | None = None) -> bool:
-    return bool((cfg if cfg is not None else _load_config()).get("enabled", False))
+    """Enabled when the settings toggle is on, or — with no explicit choice
+    saved at all — when ANTHROPIC_API_KEY is set in the environment. A key in
+    the environment is a clear enough signal that the user wants Claude
+    available to the router; an explicit "enabled": false still wins."""
+    cfg = cfg if cfg is not None else _load_config()
+    if "enabled" in cfg:
+        return bool(cfg.get("enabled"))
+    return bool(_env_api_key())
 
 
 def get_claude_settings(cfg: dict | None = None) -> tuple[str, str, int]:
-    """Returns (api_key, model, max_tokens)."""
+    """Returns (api_key, model, max_tokens). The API key falls back to the
+    ANTHROPIC_API_KEY environment variable when the settings field is empty,
+    so an already-configured machine works without pasting the key twice."""
     cfg = cfg if cfg is not None else _load_config()
-    api_key = (cfg.get("api_key") or "").strip()
+    api_key = (cfg.get("api_key") or "").strip() or _env_api_key()
     model = cfg.get("model") or _DEFAULTS["model"]
     try:
         max_tokens = int(float(cfg.get("max_tokens", _DEFAULTS["max_tokens"])))

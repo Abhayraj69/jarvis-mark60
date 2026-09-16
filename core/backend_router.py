@@ -57,7 +57,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Generator, Optional
 
 
 class TaskKind(Enum):
@@ -79,17 +79,19 @@ class TaskKind(Enum):
 # model is at least OLLAMA_MIN_PARAMS_B billion parameters — so a saved user
 # policy that still says "ollama, gemini" keeps working, just in a sane order.
 #
-# "gemini_lite" is Gemini Flash-Lite: cheapest, fastest, weakest. Nothing
-# defaults to it — callers that run on a timer (study_mode's background
-# capture loop) opt into it per call via `policy`.
+# "gemini_lite" is Gemini Flash-Lite: cheapest, fastest, weakest. It sits
+# behind Flash and Claude as the text fallback for CHAT/SUMMARIZE (Flash
+# returns 503 "high demand" in spikes, and Flash-Lite answering in 2s beats a
+# 1.7B local model answering in 7s) and is the first choice only for callers
+# that run on a timer (study_mode's background capture loop) via `policy`.
 DEFAULT_POLICY: dict[TaskKind, list[str]] = {
     TaskKind.CODE_GEN:    ["claude", "gemini", "ollama"],
     TaskKind.CODE_REVIEW: ["claude", "gemini", "ollama"],
     TaskKind.INTENT:      ["ollama", "gemini", "claude"],
-    TaskKind.SUMMARIZE:   ["gemini", "claude", "ollama"],
+    TaskKind.SUMMARIZE:   ["gemini", "claude", "gemini_lite", "ollama"],
     TaskKind.VISION:      ["gemini", "gemini_lite"],
     TaskKind.VOICE_TURN:  ["gemini"],
-    TaskKind.CHAT:        ["gemini", "claude", "ollama"],
+    TaskKind.CHAT:        ["gemini", "claude", "gemini_lite", "ollama"],
 }
 
 BREAKER_COOLDOWN_S = 60.0
@@ -355,6 +357,123 @@ _ADAPTERS: dict[str, Callable[[list, Optional[list], Optional[list], int], dict]
     "gemini":      _call_gemini,
     "gemini_lite": _call_gemini_lite,
 }
+
+
+# ── Streaming adapters ────────────────────────────────────────────────────
+# Same (messages, images, timeout) contract, but a generator of events:
+#   {"delta": str}                        text as it arrives
+#   {"done": {"backend": str, "usage": {}}}  exactly once, at the end
+# Used by core/think.py so speech can start on the first sentence instead of
+# waiting for the whole answer. A backend without a native stream (Claude's
+# bridge is non-streaming today) yields its full reply as one delta.
+
+def _gemini_stream(model: str, backend: str, messages: list, images: list | None) -> Generator[dict, None, None]:
+    api_key = _get_api_config().get("gemini_api_key")
+    if not api_key:
+        raise RuntimeError("no gemini_api_key configured")
+    from google import genai
+    from google.genai import types as gtypes
+
+    client  = genai.Client(api_key=api_key)
+    content: list = [gtypes.Part.from_bytes(data=img_bytes, mime_type=mime)
+                     for img_bytes, mime in (images or [])]
+    content.append(_messages_to_prompt(messages))
+    usage: dict = {}
+    for chunk in client.models.generate_content_stream(model=model, contents=content):
+        text = getattr(chunk, "text", None)
+        if text:
+            yield {"delta": text}
+        meta = getattr(chunk, "usage_metadata", None)
+        if meta is not None:
+            usage = {"tokens_in":  getattr(meta, "prompt_token_count", None),
+                     "tokens_out": getattr(meta, "candidates_token_count", None)}
+    yield {"done": {"backend": backend, "usage": usage}}
+
+
+def _stream_gemini(messages, images, timeout):
+    yield from _gemini_stream(GEMINI_MODEL, "gemini", messages, images)
+
+
+def _stream_gemini_lite(messages, images, timeout):
+    yield from _gemini_stream(GEMINI_LITE_MODEL, "gemini_lite", messages, images)
+
+
+def _stream_ollama(messages, images, timeout):
+    if images:
+        raise RuntimeError("ollama backend does not accept images")
+    from core import llm_client
+    url, _model = llm_client.get_llm_settings()
+    if not _ollama_reachable(url):
+        raise RuntimeError(f"Ollama unreachable at {url}")
+    usage: dict = {}
+    for ev in llm_client.stream_llm(messages, None, timeout=timeout):
+        if "delta" in ev:
+            yield {"delta": ev["delta"]}
+        elif "done" in ev:
+            usage = ev["done"] or {}
+    yield {"done": {"backend": "ollama", "usage": usage}}
+
+
+def _stream_claude(messages, images, timeout):
+    result = _call_claude(messages, None, images, timeout)
+    if result.get("content"):
+        yield {"delta": result["content"]}
+    yield {"done": {"backend": "claude", "usage": result.get("usage") or {}}}
+
+
+_STREAMERS: dict[str, Callable[[list, Optional[list], int], Generator[dict, None, None]]] = {
+    "ollama":      _stream_ollama,
+    "claude":      _stream_claude,
+    "gemini":      _stream_gemini,
+    "gemini_lite": _stream_gemini_lite,
+}
+
+
+def complete_stream(
+    kind:     TaskKind,
+    messages: list,
+    images:   list | None = None,
+    timeout:  int = 60,
+    policy:   dict[TaskKind, list[str]] | None = None,
+) -> Generator[dict, None, None]:
+    """Streaming twin of complete(): same policy order, breaker and
+    transient retry, but yields {"delta"} events and one final {"done"}.
+    Failover only happens BEFORE the first delta — once text has been
+    handed to the caller (and possibly spoken) a mid-stream failure is
+    raised rather than silently restarted on another backend."""
+    order = resolve_order(kind, policy)
+    last_error: Exception | None = None
+    attempted: list[str] = []
+
+    for name in order:
+        if _breaker_open(name) or not _is_configured(name):
+            continue
+        streamer = _STREAMERS.get(name)
+        if streamer is None:
+            continue
+        attempted.append(name)
+        for attempt in (0, 1):
+            started = False
+            try:
+                for ev in streamer(messages, images, timeout):
+                    if "delta" in ev and ev["delta"]:
+                        started = True
+                    yield ev
+                return
+            except Exception as e:
+                if started:
+                    raise
+                if attempt == 0 and _is_transient(e):
+                    time.sleep(TRANSIENT_RETRY_DELAY_S)
+                    continue
+                last_error = e
+                _trip_breaker(kind, name, e)
+                break
+
+    if not attempted:
+        raise RuntimeError(f"No backend available for {kind.value} (policy: {order}, all "
+                            f"skipped — unconfigured or in cooldown)")
+    raise RuntimeError(f"All backends failed for {kind.value} (tried {attempted}): {last_error}")
 
 
 def complete(

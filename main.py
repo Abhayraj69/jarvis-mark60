@@ -104,6 +104,8 @@ from core                      import context_manager
 from core                      import sequence_memory
 from core                      import sentiment_adapter
 from core                      import telemetry
+from core                      import result_contract
+from core                      import think as think_core
 from tool_connectors.registry  import ToolRegistry
 
 # How long the assistant stays awake with no user speech before it auto-sleeps
@@ -302,6 +304,28 @@ TOOL_DECLARATIONS = [
         },
     },
     {
+        # NON_BLOCKING: the Live model keeps talking (its one-sentence
+        # acknowledgement) while the reasoning core works; the answer arrives
+        # later as a scheduled FunctionResponse — see _start_think.
+        "name": "think",
+        "behavior": "NON_BLOCKING",
+        "description": (
+            "Hand a question to your reasoning core: explanations, comparisons, "
+            "planning, maths, advice, anything needing more than two sentences "
+            "of thought. Returns the answer for you to speak in your own voice."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "query": {"type": "STRING",
+                          "description": "The full request, with every specific the user gave"},
+                "include_screen": {"type": "BOOLEAN",
+                                   "description": "Attach a screenshot (the request is about what's on screen)"},
+            },
+            "required": ["query"],
+        },
+    },
+    {
         "name": "undo",
         "description": (
             "Reverse YOUR last change: a file moved/renamed/created/written or a "
@@ -370,6 +394,11 @@ class JarvisLive:
         self._vision_cam_active    = False   # True if camera was opened for vision → auto-close after response
         self._vision_close_pending = False   # True after vision injected; next turn_complete closes camera
         self._vision_last_time     = 0.0     # monotonic time of last screen_process call (cooldown guard)
+        # Result contract (core/result_contract.py): tools that returned
+        # ok=false, awaiting JARVIS's next words to see whether it admits it.
+        self._false_success        = result_contract.FalseSuccessTracker()
+        self._in_started_at        = 0.0     # monotonic time the current user turn's transcript began
+        self._think_tasks: set     = set()   # background `think` tasks (kept so they aren't GC'd)
         self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
         self._interrupted          = False   # True while draining audio after user interrupt
         self._local_stream_cancel  = threading.Event()  # set by interrupt() to stop a Local-Mode stream mid-flight
@@ -884,6 +913,13 @@ class JarvisLive:
         if summary["tools"]:
             top = sorted(summary["tools"].items(), key=lambda kv: -kv[1]["avg_ms"])[:5]
             lines.append("Slowest tools: " + ", ".join(f"{n} {v['avg_ms']:.0f}ms" for n, v in top))
+        fs = summary.get("false_successes") or {}
+        if fs.get("count"):
+            worst = sorted(fs["by_tool"].items(), key=lambda kv: -kv[1])[:3]
+            lines.append(f"False successes (failed tool, no admission): {fs['count']} — "
+                         + ", ".join(f"{n}×{c}" for n, c in worst))
+        else:
+            lines.append("False successes: 0")
         return True, "\n".join(lines)
 
     # ── Claude collaboration mode (core/claude_bridge.py) ─────────────────────
@@ -1436,16 +1472,189 @@ class JarvisLive:
                 response={"result": "muted until 'Hey Jarvis'", "silent": True}
             )
 
+        if name == "think":
+            # Runs in the background and sends its own FunctionResponse when
+            # the answer is ready (the tool is declared NON_BLOCKING). Returning
+            # None tells the receive loop not to answer this call itself.
+            self._start_think(fc, args)
+            return None
+
         result = await self._dispatch_tool(name, args)
+        outcome = self._apply_result_contract(name, result)
 
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
 
-        print(f"[JARVIS] 📤 {name} → {str(result)[:80]}")
+        print(f"[JARVIS] 📤 {name} → {'ok' if outcome.ok else 'FAILED'}: {outcome.summary[:80]}")
         return types.FunctionResponse(
             id=fc.id, name=name,
-            response={"result": result}
+            response=outcome.as_response()
         )
+
+    # ── Result contract (core/result_contract.py) ─────────────────────────────
+    def _apply_result_contract(self, name: str, result) -> result_contract.ToolOutcome:
+        """Wrap a raw handler result as {ok, summary, detail} and, when ok is
+        false, start watching what JARVIS says next (see _receive_audio's
+        turn_complete handling and _run_local_loop) so a reply that reports
+        success after a failed tool is counted as a false success."""
+        outcome = result_contract.classify(name, result)
+        if not outcome.ok:
+            self._false_success.register_failure(name)
+            self.ui.write_log(f"SYS: ✗ {name} — {outcome.summary[:100]}")
+        return outcome
+
+    def _note_spoken_for_contract(self, spoken: str) -> None:
+        self._false_success.note_output(spoken)
+
+    def _conclude_false_success(self, force: bool = False) -> None:
+        """Decide a pending false-success check: on a new user turn (force)
+        or once its deadline has passed. Records to telemetry and the log."""
+        verdict = self._false_success.conclude() if force else self._false_success.poll()
+        if verdict is None:
+            return
+        if verdict.false_success:
+            telemetry.record_false_success(verdict.tools, verdict.spoken)
+            self.ui.write_log(
+                f"SYS: ⚠ reported success after failed {', '.join(verdict.tools)}: "
+                f"\"{result_contract.snippet(verdict.spoken, 120)}\""
+            )
+            print(f"[Contract] false success after {verdict.tools}: {result_contract.snippet(verdict.spoken)}")
+
+    # ── think (core/think.py) ─────────────────────────────────────────────────
+    # Delivery: the first sentence or two go back as the FunctionResponse the
+    # moment they exist (scheduling=WHEN_IDLE, so they follow the model's own
+    # acknowledgement instead of cutting it off); anything after that is sent
+    # as one follow-up text turn once JARVIS has finished speaking part one.
+    # Short answers — the common case — arrive whole in the FunctionResponse.
+    _THINK_FIRST_PART_CHARS = 140
+    _THINK_FOLLOWUP_WAIT_S  = 25.0
+
+    def _start_think(self, fc, args: dict) -> None:
+        task = asyncio.get_event_loop().create_task(self._run_think(fc, args))
+        self._think_tasks.add(task)
+        task.add_done_callback(self._think_tasks.discard)
+
+    async def _run_think(self, fc, args: dict) -> None:
+        loop  = asyncio.get_event_loop()
+        query = str(args.get("query") or "").strip()
+        include_screen = bool(args.get("include_screen", False))
+        turn  = self._current_turn
+        t0    = time.monotonic()
+
+        if not query:
+            await self._send_think_response(fc, {"ok": False, "summary": "think needs a query",
+                                                 "detail": "No query was given."})
+            return
+
+        self.ui.write_log(f"[think] {query[:80]}{' +screen' if include_screen else ''}")
+
+        first_closed = threading.Event()   # decided synchronously in the worker thread
+        first_sent   = asyncio.Event()     # loop-side signal that part one can go
+        first_part:  list[str] = []
+        rest_part:   list[str] = []
+
+        def _on_sentence(sentence: str, idx: int):
+            # Worker thread. The part-one/part-two split is decided HERE with
+            # a threading.Event, not by peeking at the asyncio.Event: a
+            # call_soon_threadsafe(set) hasn't run yet when the next sentence
+            # arrives on a fast stream, and every sentence would land in
+            # part one.
+            if not first_closed.is_set():
+                first_part.append(sentence)
+                if sum(len(x) for x in first_part) >= self._THINK_FIRST_PART_CHARS or idx >= 1:
+                    first_closed.set()
+                    loop.call_soon_threadsafe(first_sent.set)
+            else:
+                rest_part.append(sentence)
+
+        try:
+            from core.backend_router import load_policy_from_config
+            policy = load_policy_from_config(get_plugin_config("routing"))
+        except Exception:
+            policy = None
+
+        async def _deliver_first_when_ready():
+            await first_sent.wait()
+            text = " ".join(first_part).strip()
+            await self._send_think_response(fc, {
+                "ok": True, "summary": text[:160], "detail": text,
+                "relay": "Speak this now in your own voice; more may follow — do not conclude.",
+            })
+
+        deliver_task = asyncio.ensure_future(_deliver_first_when_ready())
+        try:
+            result = await asyncio.to_thread(
+                think_core.run, query, list(self._session_log), include_screen,
+                _on_sentence, policy,
+            )
+        except Exception as e:
+            deliver_task.cancel()
+            msg = str(e)[:200]
+            self.ui.write_log(f"ERR: think — {msg}")
+            self._false_success.register_failure("think")
+            await self._send_think_response(fc, {"ok": False, "summary": "reasoning failed",
+                                                 "detail": f"The reasoning core failed: {msg}"})
+            return
+
+        elapsed = (time.monotonic() - t0) * 1000
+        label = f"think:{result.backend or 'unknown'}"
+        if turn is not None:
+            turn.add_tool_span(label, elapsed)
+        self.ui.write_log(f"[think] {result.backend} · {elapsed:.0f}ms · {len(result.sentences)} sentence(s)")
+
+        if not first_closed.is_set():
+            # Whole answer fits in part one (or nothing came back at all).
+            deliver_task.cancel()
+            text = result.text.strip()
+            if text:
+                await self._send_think_response(fc, {"ok": True, "summary": text[:160], "detail": text,
+                                                     "relay": "Speak this answer in your own voice."})
+            else:
+                self._false_success.register_failure("think")
+                await self._send_think_response(fc, {"ok": False, "summary": "empty answer",
+                                                     "detail": "The reasoning core returned nothing."})
+            return
+
+        await deliver_task
+        rest = " ".join(rest_part).strip()
+        if rest and self.session:
+            await self._wait_until_quiet(self._THINK_FOLLOWUP_WAIT_S)
+            try:
+                await self.session.send_client_content(
+                    turns={"role": "user", "parts": [{"text":
+                        "[THINK, continued] Continue relaying this directly, in your own voice, "
+                        "with no preamble and without repeating what you already said: " + rest}]},
+                    turn_complete=True,
+                )
+            except Exception as e:
+                print(f"[Think] could not deliver continuation: {e}")
+
+    async def _send_think_response(self, fc, response: dict) -> None:
+        if not self.session:
+            return
+        try:
+            await self.session.send_tool_response(function_responses=[
+                types.FunctionResponse(
+                    id=fc.id, name="think", response=response,
+                    scheduling=types.FunctionResponseScheduling.WHEN_IDLE,
+                )
+            ])
+        except Exception as e:
+            print(f"[Think] could not deliver response: {e}")
+
+    async def _wait_until_quiet(self, timeout: float) -> None:
+        """Wait until JARVIS has stopped speaking (or `timeout` passes) so a
+        follow-up text turn doesn't interrupt part one mid-sentence."""
+        deadline = time.monotonic() + timeout
+        # Give the model a moment to start speaking part one before we
+        # start polling for silence.
+        await asyncio.sleep(1.5)
+        while time.monotonic() < deadline:
+            with self._speaking_lock:
+                speaking = self._is_speaking
+            if not speaking:
+                return
+            await asyncio.sleep(0.2)
 
     async def _dispatch_tool(self, name: str, args: dict) -> str:
         """The actual tool router: everything except the Gemini-specific
@@ -1968,8 +2177,10 @@ class JarvisLive:
                         if sc.input_transcription and sc.input_transcription.text:
                             txt = _clean_transcript(sc.input_transcription.text)
                             if txt:
-                                if not in_buf and self._current_turn is None:
-                                    self._current_turn = telemetry.start_turn("gemini")
+                                if not in_buf:
+                                    self._in_started_at = time.monotonic()
+                                    if self._current_turn is None:
+                                        self._current_turn = telemetry.start_turn("gemini")
                                 in_buf.append(txt)
                                 self._last_user_speech = time.monotonic()
 
@@ -1999,6 +2210,12 @@ class JarvisLive:
                                 continue
 
                             full_in = " ".join(in_buf).strip()
+                            # Result contract: a user turn that began AFTER a
+                            # tool failed closes the book on it — whatever
+                            # JARVIS said in between is all it is going to say.
+                            if full_in and self._false_success.pending \
+                                    and self._in_started_at > (self._false_success.since or 0.0):
+                                self._conclude_false_success(force=True)
                             if full_in:
                                 self.ui.write_log(f"You: {full_in}")
                                 self._session_log.append(f"User: {full_in}")
@@ -2012,6 +2229,9 @@ class JarvisLive:
                             in_buf = []
 
                             full_out = " ".join(out_buf).strip()
+                            if full_out:
+                                self._note_spoken_for_contract(full_out)
+                            self._conclude_false_success()
                             if full_out:
                                 self.ui.write_log(f"{self._asst_name}: {full_out}")
                                 self._session_log.append(f"{self._asst_name}: {full_out}")
@@ -2067,10 +2287,12 @@ class JarvisLive:
                                     if self._current_turn else contextlib.nullcontext())
                             with span:
                                 fr = await self._execute_tool(fc)
-                            fn_responses.append(fr)
-                        await self.session.send_tool_response(
-                            function_responses=fn_responses
-                        )
+                            if fr is not None:          # `think` answers itself later
+                                fn_responses.append(fr)
+                        if fn_responses:
+                            await self.session.send_tool_response(
+                                function_responses=fn_responses
+                            )
         except Exception as e:
             print(f"[JARVIS] ❌ Recv: {e}")
             traceback.print_exc()
@@ -3007,6 +3229,9 @@ class JarvisLive:
             if not text:
                 continue
 
+            # Result contract: a new user turn closes any pending check.
+            if self._false_success.pending:
+                self._conclude_false_success(force=True)
             self.ui.write_log(f"You: {text}")
             self._session_log.append(f"User: {text}")
             self._log_context_turn("user", text)
@@ -3112,10 +3337,11 @@ class JarvisLive:
                     self.ui.set_state("THINKING")
                     with turn.tool_span(name):
                         tool_result = await self._dispatch_tool(name, args)
-                    print(f"[JARVIS] 📤 {name} → {str(tool_result)[:80]}")
+                    outcome = self._apply_result_contract(name, tool_result)
+                    print(f"[JARVIS] 📤 {name} → {'ok' if outcome.ok else 'FAILED'}: {outcome.summary[:80]}")
                     messages.append({
                         "role": "tool", "tool_call_id": tc.get("id", ""),
-                        "name": name, "content": str(tool_result),
+                        "name": name, "content": json.dumps(outcome.as_response(), ensure_ascii=False),
                     })
                 if standby_entered:
                     break
@@ -3142,6 +3368,7 @@ class JarvisLive:
 
             reply = (resp.get("content") or "").strip()
             if reply:
+                self._note_spoken_for_contract(reply)
                 self.ui.write_log(f"{self._asst_name}: {reply}")
                 self._session_log.append(f"{self._asst_name}: {reply}")
                 self._log_context_turn("assistant", reply)
