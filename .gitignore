@@ -57,3 +57,4 @@ logs/
 downloads/
 screenshots/
 widget/.wake_widget.pid
+widget/.widget_prefs.json

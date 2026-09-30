@@ -69,15 +69,257 @@ PID_FILE      = WIDGET_DIR / ".wake_widget.pid"
 DEFAULT_ACCENT = "#00d4ff"   # matches ui.py's DEFAULT_UI_COLOR (unthemed default)
 CONTROL_PORT  = 8766    # loopback-only — separate from JARVIS's own 8765 (core/local_control.py)
 
-# Widget's authored size — the HTML/CSS (radar geometry, font sizes, corner
-# readouts) is all fixed px, laid out for exactly this box. The drag-to-resize
-# handle (see arc_sentinel_widget.html) scales the page uniformly with CSS
-# `zoom` relative to this, so every element shrinks/grows together instead of
-# reflowing. MIN/MAX bound how far that zoom can go — small enough to still
-# read as the same HUD, not so small it becomes an unreadable speck or, at
-# the top end, so large it swallows half the screen.
-WIDGET_WIDTH, WIDGET_HEIGHT = 300, 336
-WIDGET_MIN_SCALE, WIDGET_MAX_SCALE = 0.55, 1.6
+IS_MAC        = sys.platform == "darwin"
+PREFS_FILE    = WIDGET_DIR / ".widget_prefs.json"
+
+# The widget's three sizes, switched from buttons on the widget itself (see
+# arc_sentinel_widget.html) and remembered in PREFS_FILE between launches:
+# (width, height, corner radius). The radius is only used on macOS, where the
+# rounded shape comes from the native vibrancy view rather than CSS.
+WIDGET_SIZES = {
+    "full":    (236, 276, 18),
+    "compact": (304, 64, 32),
+    "mini":    (60, 60, 30),
+}
+DEFAULT_MODE = "full"
+
+# On top of the layout, the whole widget can be scaled down for small screens
+# (right-click / "⋯" menu, or ⌘− ⌘= ⌘0). The page zooms by the same factor the
+# window is resized by, so the layout itself never reflows — it just renders
+# smaller. Presets rather than free dragging, so the text stays crisp.
+WIDGET_SCALES = [
+    ("Extra Small", 0.6),
+    ("Small",       0.7),
+    ("Medium",      0.85),
+    ("Default",     1.0),
+]
+DEFAULT_SCALE = 1.0
+MODE_LABELS = {"full": "Full", "compact": "Compact", "mini": "Orb Only"}
+
+
+def _nearest_scale(value) -> float:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return DEFAULT_SCALE
+    return min((sc for _, sc in WIDGET_SCALES), key=lambda sc: abs(sc - value))
+
+
+def _load_prefs() -> tuple[str, float]:
+    try:
+        prefs = json.loads(PREFS_FILE.read_text())
+    except Exception:
+        prefs = {}
+    mode = prefs.get("mode")
+    return (mode if mode in WIDGET_SIZES else DEFAULT_MODE,
+            _nearest_scale(prefs.get("scale", DEFAULT_SCALE)))
+
+
+def _save_prefs(mode: str, scale: float) -> None:
+    try:
+        PREFS_FILE.write_text(json.dumps({"mode": mode, "scale": scale}))
+    except Exception as e:
+        print(f"[Widget] Could not save size preference: {e}")
+
+
+def _scaled_size(mode: str, scale: float) -> tuple[int, int, int]:
+    width, height, radius = WIDGET_SIZES[mode]
+    return round(width * scale), round(height * scale), round(radius * scale)
+
+
+def _apply_mac_chrome(window, radius: int) -> None:
+    """Real macOS frosted glass: a dark HUD-material NSVisualEffectView behind
+    the (transparent) page, clipped to the widget's rounded shape, with the
+    native window shadow following that shape. Re-run after every size change
+    so the corner radius and shadow match. Must run on the main thread."""
+    import AppKit
+    ns_window = window.native
+    if ns_window is None:
+        return
+    host = ns_window.contentView()
+    effect = getattr(window, "_sentinel_effect", None)
+    if effect is None:
+        effect = AppKit.NSVisualEffectView.alloc().initWithFrame_(host.bounds())
+        effect.setAutoresizingMask_(AppKit.NSViewWidthSizable | AppKit.NSViewHeightSizable)
+        effect.setMaterial_(AppKit.NSVisualEffectMaterialHUDWindow)
+        effect.setBlendingMode_(AppKit.NSVisualEffectBlendingModeBehindWindow)
+        effect.setState_(AppKit.NSVisualEffectStateActive)
+        effect.setAppearance_(AppKit.NSAppearance.appearanceNamed_(AppKit.NSAppearanceNameVibrantDark))
+        effect.setWantsLayer_(True)
+        host.addSubview_positioned_relativeTo_(effect, AppKit.NSWindowBelow, None)
+        window._sentinel_effect = effect
+    effect.setFrame_(host.bounds())
+    effect.layer().setCornerRadius_(radius)
+    effect.layer().setMasksToBounds_(True)
+    ns_window.setHasShadow_(True)
+    ns_window.invalidateShadow()
+
+
+def _pin_to_all_spaces(window) -> None:
+    """Keep the widget on every Space (desktop) and over full-screen apps.
+
+    pywebview leaves the NSWindow with the default collection behaviour, which
+    ties a window to the one Space it was opened on, so swiping to another
+    desktop leaves the widget behind. It also runs the process as a regular
+    Dock app (activation policy 0), and macOS never draws a regular app's
+    windows inside another app's full-screen Space, whatever the behaviour
+    flags say. So:
+      * CanJoinAllSpaces       — present on every desktop, not just one
+      * Stationary             — stays put during the Space-switch animation
+                                 and Mission Control instead of sliding away
+      * FullScreenAuxiliary    — allowed to sit on top of full-screen apps
+      * IgnoresCycle           — not part of Cmd-` window cycling
+      * Accessory activation   — no Dock icon or menu bar, like a menu-bar
+                                 utility; required for the full-screen case
+    Must run on the main thread."""
+    import AppKit
+    ns_window = window.native
+    if ns_window is None:
+        return
+    ns_window.setCollectionBehavior_(
+        AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+        | AppKit.NSWindowCollectionBehaviorStationary
+        | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
+        | AppKit.NSWindowCollectionBehaviorIgnoresCycle)
+    # Above normal and floating windows; pywebview's on_top uses the same level.
+    ns_window.setLevel_(AppKit.NSStatusWindowLevel)
+    ns_window.setHidesOnDeactivate_(False)
+    ns_window.setCanHide_(False)   # survives Cmd-H / "Hide Others"
+    nonactivating = bool(ns_window.styleMask() & AppKit.NSWindowStyleMaskNonactivatingPanel)
+    print(f"[Widget] Pinned to all Spaces (behaviour={ns_window.collectionBehavior()}, "
+          f"level={ns_window.level()}, "
+          f"policy={AppKit.NSApplication.sharedApplication().activationPolicy()}, "
+          f"window={ns_window.className()}, nonactivating={nonactivating})")
+
+
+def _install_mac_overlay_window() -> None:
+    """Must run BEFORE webview.create_window()/start().
+
+    pywebview builds every window as a plain NSWindow subclass (WindowHost)
+    and runs the process as a regular Dock app. Collection-behaviour flags
+    alone weren't enough for that combination: the widget stayed on the
+    desktop it was opened on, and never appeared over full-screen apps.
+    macOS overlays that follow you everywhere (Spotlight-style HUDs, floating
+    clocks) are non-activating NSPanels owned by an accessory (LSUIElement)
+    app, so:
+      * swap pywebview's window class for an NSPanel that always carries
+        NSWindowStyleMaskNonactivatingPanel — clicking it never activates
+        the app, so macOS never re-homes it to "the app's" Space;
+      * switch the process to the accessory activation policy now, before
+        any window exists, instead of flipping it on a live window.
+    """
+    import AppKit
+    import objc
+    from webview.platforms import cocoa
+
+    class SentinelPanel(AppKit.NSPanel):
+        def initWithContentRect_styleMask_backing_defer_(self, rect, mask, backing, defer):
+            self = objc.super(SentinelPanel, self).initWithContentRect_styleMask_backing_defer_(
+                rect, mask | AppKit.NSWindowStyleMaskNonactivatingPanel, backing, defer)
+            return self
+
+        # Key (so its buttons and page get clicks) but never main, never
+        # pulling the app forward — same as a Spotlight/HUD panel.
+        def canBecomeKeyWindow(self):
+            return True
+
+        def canBecomeMainWindow(self):
+            return False
+
+    cocoa.BrowserView.WindowHost = SentinelPanel
+    cocoa.BrowserView.app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
+
+
+def _mac_show(window) -> None:
+    """Bring the widget up on whatever Space is current WITHOUT activating the
+    app. pywebview's own show() calls activateIgnoringOtherApps_, which steals
+    focus and makes macOS treat the window as belonging to that app's Space."""
+    from PyObjCTools import AppHelper
+    AppHelper.callAfter(lambda: window.native.orderFrontRegardless())
+
+
+_SentinelMenuTarget = None   # ObjC classes can only be defined once per process
+
+
+def _show_mac_menu(controller) -> None:
+    """Native right-click menu: layout, size, hide. Main thread only.
+
+    Choices are sent back through the page (setMode / setScale in
+    arc_sentinel_widget.html) on a worker thread — evaluate_js waits for the
+    page, and the page needs this main thread to answer, so calling it
+    directly from the menu action would deadlock."""
+    global _SentinelMenuTarget
+    import AppKit
+    if _SentinelMenuTarget is None:
+        class SentinelMenuTarget(AppKit.NSObject):
+            def pick_(self, sender):
+                self.handler(str(sender.representedObject()))
+        _SentinelMenuTarget = SentinelMenuTarget
+
+    def handle(choice: str) -> None:
+        kind, _, value = choice.partition(":")
+        def run():
+            try:
+                if kind == "mode":
+                    controller.window.evaluate_js(f"setMode({json.dumps(value)})")
+                elif kind == "scale":
+                    controller.window.evaluate_js(f"setScale({float(value)})")
+                elif kind == "hide":
+                    controller.on_bye_jarvis()
+            except Exception as e:
+                print(f"[Widget] Menu action failed: {e}")
+        threading.Thread(target=run, daemon=True).start()
+
+    target = _SentinelMenuTarget.alloc().init()
+    target.handler = handle
+    controller._menu_target = target   # NSMenuItem doesn't retain its target
+
+    menu = AppKit.NSMenu.alloc().initWithTitle_("Sentinel")
+    menu.setAutoenablesItems_(False)
+
+    def header(title):
+        it = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, None, "")
+        it.setEnabled_(False)
+        menu.addItem_(it)
+
+    def item(title, value, checked=False):
+        it = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, "pick:", "")
+        it.setTarget_(target)
+        it.setRepresentedObject_(value)
+        it.setState_(AppKit.NSControlStateValueOn if checked else AppKit.NSControlStateValueOff)
+        menu.addItem_(it)
+
+    header("Layout")
+    for mode, label in MODE_LABELS.items():
+        item(label, f"mode:{mode}", mode == controller.mode)
+    menu.addItem_(AppKit.NSMenuItem.separatorItem())
+    header("Size")
+    for label, scale in WIDGET_SCALES:
+        item(f"{label}  ({round(scale * 100)}%)", f"scale:{scale}", scale == controller.scale)
+    menu.addItem_(AppKit.NSMenuItem.separatorItem())
+    item("Hide Widget", "hide:")
+
+    menu.popUpMenuPositioningItem_atLocation_inView_(None, AppKit.NSEvent.mouseLocation(), None)
+
+
+def _mac_chrome_later(window, radius: int) -> None:
+    from PyObjCTools import AppHelper
+    def run():
+        try:
+            _apply_mac_chrome(window, radius)
+        except Exception as e:
+            print(f"[Widget] macOS glass effect unavailable: {e}")
+    AppHelper.callAfter(run)
+
+
+def _mac_pin_later(window) -> None:
+    from PyObjCTools import AppHelper
+    def run():
+        try:
+            _pin_to_all_spaces(window)
+        except Exception as e:
+            print(f"[Widget] Could not pin widget to all Spaces: {e}")
+    AppHelper.callAfter(run)
 
 
 def _get_accent_hex() -> str:
@@ -172,6 +414,9 @@ class WidgetController:
 
     def __init__(self):
         self.window   = None
+        self.mode     = DEFAULT_MODE     # layout + scale: set from prefs in main()
+        self.scale    = DEFAULT_SCALE
+        self._menu_target = None
         self.visible  = False
         self._ring    = collections.deque(maxlen=int(SAMPLE_RATE * BYE_WINDOW_S / CHUNK_SIZE) + 2)
         self._lock    = threading.Lock()
@@ -193,7 +438,10 @@ class WidgetController:
             # and immediately re-hide the widget it was meant to bring back.
             self._ring.clear()
         try:
-            self.window.show()
+            if IS_MAC:
+                _mac_show(self.window)
+            else:
+                self.window.show()
         except Exception as e:
             print(f"[Widget] show() failed: {e}")
         threading.Thread(target=self._bye_listener_loop, daemon=True).start()
@@ -258,23 +506,45 @@ def _js_api(controller: WidgetController):
         def say_bye(self):
             controller.on_bye_jarvis()
 
-        def resize_widget(self, scale):
-            """Called by the corner drag-handle's JS as the user resizes.
-            `scale` is the ratio the page has already applied to itself via
-            CSS zoom (see arc_sentinel_widget.html) — this just makes the
-            actual OS window match, fixed at the bottom-right corner so a
-            widget docked there doesn't drift off screen as it grows/shrinks
-            from its top-left handle."""
-            try:
-                from webview.window import FixPoint   # deferred: see the `import webview` note in main()
-                scale = max(WIDGET_MIN_SCALE, min(WIDGET_MAX_SCALE, float(scale)))
-                controller.window.resize(
-                    int(WIDGET_WIDTH * scale), int(WIDGET_HEIGHT * scale),
-                    fix_point=FixPoint.SOUTH | FixPoint.EAST,
-                )
-            except Exception as e:
-                print(f"[Widget] Resize failed: {e}")
+        def set_mode(self, mode):
+            """Called when the user picks full / compact / mini on the widget.
+            The page has already switched its layout; this resizes the real
+            window to match and remembers the choice."""
+            if mode not in WIDGET_SIZES:
+                return
+            controller.mode = mode
+            _apply_size(controller)
+
+        def set_scale(self, scale):
+            """Called when the user picks a size preset. The page has already
+            zoomed itself by `scale`; this resizes the real window to match."""
+            controller.scale = _nearest_scale(scale)
+            _apply_size(controller)
+            return controller.scale
+
+        def show_menu(self):
+            """Right-click / "⋯". Returns False where there's no native menu,
+            so the page falls back to stepping through the size presets."""
+            if not IS_MAC:
+                return False
+            from PyObjCTools import AppHelper
+            AppHelper.callAfter(_show_mac_menu, controller)
+            return True
     return Api()
+
+
+def _apply_size(controller) -> None:
+    """Resize the window to its layout × scale — pinned at the bottom-right
+    corner so a widget docked there stays put — and remember the choice."""
+    try:
+        from webview.window import FixPoint   # deferred: see the `import webview` note in main()
+        width, height, radius = _scaled_size(controller.mode, controller.scale)
+        controller.window.resize(width, height, fix_point=FixPoint.SOUTH | FixPoint.EAST)
+        if IS_MAC:
+            _mac_chrome_later(controller.window, radius)
+        _save_prefs(controller.mode, controller.scale)
+    except Exception as e:
+        print(f"[Widget] Resize failed: {e}")
 
 
 def _start_control_server(controller: WidgetController) -> None:
@@ -368,12 +638,19 @@ def main() -> None:
         if controller.visible:
             controller.feed_audio(indata[:, 0] if indata.ndim > 1 else indata)
 
+    # The stream MUST stay referenced for the life of the process. If it is
+    # garbage-collected, its cffi callback trampoline is freed while PortAudio's
+    # IO thread is still calling it, and the process segfaults (SIGSEGV in
+    # ffi_closure_SYSV_inner on com.apple.audio.IOThread.client).
+    mic_streams = []
+
     def _open_mic(dev):
         s = sd.InputStream(
             samplerate=SAMPLE_RATE, channels=1, dtype="int16",
             blocksize=CHUNK_SIZE, device=dev, callback=mic_callback,
         )
         s.start()
+        mic_streams.append(s)
         return s
 
     def start_backend():
@@ -405,15 +682,17 @@ def main() -> None:
             except Exception as e2:
                 print(f"[Widget] Could not open any microphone: {e2}")
 
-    # ── window: frameless, always-on-top, bottom-right corner, hidden until
-    #    'Hey Jarvis' fires (or the main app's button calls /show). webview.
-    #    screens[] resolves before start(), so the window is created in its
-    #    final spot instead of jumping there once loaded. Sized to the
-    #    widget's actual content (eyebrow + 148px radar + status text + one
-    #    row of two control buttons, ~300px with padding) plus headroom —
-    #    smaller than the old two-row layout since the buttons now sit
-    #    side-by-side instead of stacked. ─────────────────────────────────
-    width, height, margin = WIDGET_WIDTH, WIDGET_HEIGHT, 24
+    # ── window: frameless, always-on-top, docked bottom-right, hidden until
+    #    'Hey Jarvis' fires (or the main app's button calls /show). Opens at
+    #    whichever size the user last picked. On macOS it's transparent, with
+    #    native frosted glass added behind the page once it has loaded. ─────
+    if IS_MAC:
+        _install_mac_overlay_window()
+
+    mode, scale = _load_prefs()
+    controller.mode, controller.scale = mode, scale
+    width, height, radius = _scaled_size(mode, scale)
+    margin = 24
     x = y = None
     try:
         screen = webview.screens[0]
@@ -423,24 +702,27 @@ def main() -> None:
         pass   # no screen info — fall back to pywebview's own default placement
 
     from urllib.parse import quote
-    page_url = f"{WIDGET_DIR / 'arc_sentinel_widget.html'}?accent={quote(_get_accent_hex())}"
+    page_url = (f"{WIDGET_DIR / 'arc_sentinel_widget.html'}"
+                f"?accent={quote(_get_accent_hex())}&mode={mode}&scale={scale}&mac={int(IS_MAC)}")
 
-    # min_size must be set explicitly: pywebview's own default (200, 100)
-    # would otherwise silently clamp resize() calls before they ever reach
-    # WIDGET_MIN_SCALE's floor, since WinForms enforces MinimumSize on the
-    # native window regardless of who asked for the resize.
+    # min_size must allow the smallest mode, or the native window would clamp it.
+    mini_w, mini_h, _ = _scaled_size("mini", min(sc for _, sc in WIDGET_SCALES))
     window = webview.create_window(
         "Arc Sentinel",
         url=page_url,
         width=width, height=height, x=x, y=y,
-        frameless=True, on_top=True, easy_drag=True, resizable=True,
-        min_size=(int(WIDGET_WIDTH * WIDGET_MIN_SCALE), int(WIDGET_HEIGHT * WIDGET_MIN_SCALE)),
+        frameless=True, on_top=True, easy_drag=True, resizable=False,
+        min_size=(mini_w, mini_h),
+        transparent=IS_MAC, background_color="#000000" if IS_MAC else "#111318",
         js_api=_js_api(controller),
         hidden=True,
     )
     controller.window = window
     _start_control_server(controller)
     window.events.loaded += lambda: threading.Thread(target=start_backend, daemon=True).start()
+    if IS_MAC:
+        window.events.loaded += lambda: _mac_chrome_later(window, radius)
+        window.events.loaded += lambda: _mac_pin_later(window)
     webview.start()
 
 
