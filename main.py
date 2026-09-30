@@ -125,6 +125,16 @@ WAKE_SETTLE_SECONDS = 1.0
 # with no new, deliberate goodbye from the user. Short enough that a real,
 # fast second "bye jarvis" from the user is not a realistic case it blocks.
 STANDBY_REENTRY_GUARD_SECONDS = 2.5
+# The model decides when to call shutdown_jarvis, and with proactive audio on
+# it can do so with no request at all (a goodbye said to someone else, TV
+# audio, its own voice leaking back from the speakers). Only honour it when
+# the user actually spoke or typed within this window.
+SHUTDOWN_USER_WINDOW_SECONDS = 10.0
+# Laptop speakers keep playing for a moment after the last chunk is handed to
+# PortAudio. Re-opening the mic the instant playback "ends" streams JARVIS's
+# own trailing words back to Gemini, which reads them as the user talking —
+# a phantom turn, a barge-in, or (if the tail was "…bye") a phantom goodbye.
+ECHO_TAIL_SECONDS = 0.8
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -265,8 +275,9 @@ TOOL_DECLARATIONS = [
     {
         "name": "shutdown_jarvis",
         "description": (
-            "Go quiet until 'Hey Jarvis' wakes you: the user says goodbye or "
-            "tells you to stop. Does not close the app."
+            "Sleep until 'Hey Jarvis'. ONLY when the user tells YOU to sleep "
+            "or says bye to you. Never for goodbyes to others, background/TV "
+            "audio, or 'stop' about a task."
         ),
         "parameters": {"type": "OBJECT", "properties": {}},
     },
@@ -389,6 +400,10 @@ class JarvisLive:
         self._loop                     = None
         self._is_speaking         = False
         self._speaking_lock       = threading.Lock()
+        self._mic_open_at         = 0.0     # mic stays gated until then (ECHO_TAIL_SECONDS)
+        self._has_connected       = False   # False only until the first Live connect
+        self._last_activity       = time.monotonic()  # drives auto-sleep (see _touch_activity)
+        self._last_user_text      = ""      # latest thing the user said/typed, for sleep logs
         self._phone_active        = False   # True while phone mic is streaming; pauses PC mic
         self._pending_vision       = None    # (img_bytes, mime_type, question, angle) to inject after tool response
         self._vision_cam_active    = False   # True if camera was opened for vision → auto-close after response
@@ -574,6 +589,7 @@ class JarvisLive:
             self._wake_enabled       = self._standby_restore_wake_enabled
             self._standby_forced_wake = False
         self._last_user_speech = time.monotonic()   # start the auto-sleep clock now
+        self._touch_activity()
         if not self.ui.muted:
             self.ui.set_state("LISTENING")
         self.ui.write_log(f"SYS: Awake — {reason}.")
@@ -628,6 +644,37 @@ class JarvisLive:
                 "the HUD, or set up wake word once in ⚙ → WAKE WORD."
             )
 
+    def _touch_activity(self) -> None:
+        """Reset the auto-sleep clock. Called for anything that means the
+        conversation is live: user speech, typed text, JARVIS finishing a
+        reply, a tool starting or finishing. The clock used to move only on
+        user speech, so JARVIS fell asleep right after finishing a long answer
+        or tool run, and never counted typed commands at all."""
+        self._last_activity = time.monotonic()
+
+    def _note_user_input(self, text: str = "") -> None:
+        self._last_user_speech = time.monotonic()
+        if text:
+            self._last_user_text = text
+        self._touch_activity()
+
+    def _sleep_reason(self) -> str:
+        """Say what the model heard when it chose to sleep, so a surprise
+        sleep in the log shows its trigger instead of a generic 'bye jarvis'."""
+        heard = self._last_user_text.strip()
+        return f'you said "{heard[:80]}"' if heard else "bye jarvis"
+
+    def _standby_allowed(self) -> bool:
+        """Guard for the model's shutdown_jarvis call — see
+        SHUTDOWN_USER_WINDOW_SECONDS."""
+        if (time.monotonic() - self._last_user_speech) <= SHUTDOWN_USER_WINDOW_SECONDS:
+            return True
+        self.ui.write_log(
+            "SYS: Ignored a sleep request — you hadn't said anything just before it."
+        )
+        print("[JARVIS] 🛡️ shutdown_jarvis ignored: no recent user input")
+        return False
+
     def sleep(self, reason: str = "timeout") -> None:
         if not self._awake:
             return
@@ -646,8 +693,8 @@ class JarvisLive:
                 speaking = self._is_speaking
             if speaking:
                 continue
-            if (time.monotonic() - self._last_user_speech) > self._wake_sleep_timeout:
-                self.sleep(reason="no speech for 2 minutes")
+            if (time.monotonic() - self._last_activity) > self._wake_sleep_timeout:
+                self.sleep(reason="no activity for 2 minutes")
 
     # ── Wake word: UI callbacks (called from the Qt thread) ──────────────────
 
@@ -1221,6 +1268,7 @@ class JarvisLive:
         if self._wake_enabled and not self._awake:
             self.ui.write_log("SYS: I'm asleep — say 'Hey Jarvis' or tap WAKE NOW first.")
             return
+        self._note_user_input(text)
         if self._try_fast_intent(text):
             return
         asyncio.run_coroutine_threadsafe(
@@ -1231,9 +1279,14 @@ class JarvisLive:
             self._loop
         )
 
-    def set_speaking(self, value: bool):
+    def set_speaking(self, value: bool, echo_guard: bool = True):
         with self._speaking_lock:
+            was_speaking = self._is_speaking
             self._is_speaking = value
+            if was_speaking and not value:
+                self._mic_open_at = (time.monotonic() + ECHO_TAIL_SECONDS) if echo_guard else 0.0
+        if was_speaking and not value:
+            self._touch_activity()
         if value:
             self.ui.set_state("SPEAKING")
         elif not self.ui.muted:
@@ -1266,7 +1319,7 @@ class JarvisLive:
                     break
             if drained:
                 print(f"[JARVIS] ✋ Interrupted — {drained} audio chunks discarded")
-        self.set_speaking(False)
+        self.set_speaking(False, echo_guard=False)
         if self._turn_done_event:
             self._turn_done_event.clear()
 
@@ -1446,6 +1499,7 @@ class JarvisLive:
         args = dict(fc.args or {})
 
         print(f"[JARVIS] 🔧 {name}  {args}")
+        self._touch_activity()
         self.ui.set_state("THINKING")
 
         if name == "save_memory":
@@ -1466,7 +1520,14 @@ class JarvisLive:
             # `silent: True` (see save_memory above) tells the Live API not to
             # generate a spoken turn for this — a text instruction alone is
             # not a hard enough guarantee for "zero trailing speech".
-            self._enter_standby(reason="bye jarvis")
+            if not self._standby_allowed():
+                return types.FunctionResponse(
+                    id=fc.id, name=name,
+                    response={"result": "ignored: the user did not ask you to sleep. "
+                                        "Stay awake and do not call this again unless they do.",
+                              "silent": True}
+                )
+            self._enter_standby(reason=self._sleep_reason())
             return types.FunctionResponse(
                 id=fc.id, name=name,
                 response={"result": "muted until 'Hey Jarvis'", "silent": True}
@@ -2074,7 +2135,8 @@ class JarvisLive:
                 return
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
-            if not jarvis_speaking and not self.ui.muted and not self._phone_active:
+            if (not jarvis_speaking and time.monotonic() >= self._mic_open_at
+                    and not self.ui.muted and not self._phone_active):
                 data = indata.tobytes()
                 loop.call_soon_threadsafe(
                     self.out_queue.put_nowait,
@@ -2182,7 +2244,7 @@ class JarvisLive:
                                     if self._current_turn is None:
                                         self._current_turn = telemetry.start_turn("gemini")
                                 in_buf.append(txt)
-                                self._last_user_speech = time.monotonic()
+                                self._note_user_input(" ".join(in_buf))
 
                         if sc.turn_complete:
                             if self._turn_done_event:
@@ -2850,7 +2912,19 @@ class JarvisLive:
 
                     # Wake word: if enabled, come up ASLEEP (mic gated, silent)
                     # until the user says "Hey Jarvis" or taps wake in the UI.
-                    if self._wake_enabled:
+                    # Only the FIRST connect of a run comes up asleep. Live
+                    # sessions drop and reconnect on their own (network blips,
+                    # server GoAway, a 503, changing mic or voice); forcing
+                    # sleep on every one of those put JARVIS to sleep
+                    # mid-conversation with no command from the user.
+                    reconnect = self._has_connected
+                    self._has_connected = True
+                    if reconnect and self._awake:
+                        self._touch_activity()
+                        if not self.ui.muted:
+                            self.ui.set_state("LISTENING")
+                        self.ui.write_log("SYS: Reconnected — still awake.")
+                    elif self._wake_enabled:
                         self._ensure_wake_detector()
                         self._awake = False
                         self.ui.set_state("SLEEPING")
@@ -3235,7 +3309,7 @@ class JarvisLive:
             self.ui.write_log(f"You: {text}")
             self._session_log.append(f"User: {text}")
             self._log_context_turn("user", text)
-            self._last_user_speech = time.monotonic()
+            self._note_user_input(text)
 
             # Refresh the reserved context slot (messages[1]) right before
             # this turn is sent — session recency, project facts, and
@@ -3325,7 +3399,7 @@ class JarvisLive:
                         # Mute, don't exit — see _enter_standby(). No LLM call
                         # and no TTS after this: skip straight back to the top
                         # of the outer loop, where the _awake gate takes over.
-                        self._enter_standby(reason="bye jarvis")
+                        self._enter_standby(reason=self._sleep_reason())
                         messages.append({
                             "role": "tool", "tool_call_id": tc.get("id", ""),
                             "name": name, "content": "muted until 'Hey Jarvis'",
