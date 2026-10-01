@@ -998,8 +998,8 @@ class JarvisLive:
         say something short WHILE its run() is still executing (plugins block
         their executor thread, so they can't speak through the tool response
         until they finish). The instruction is injected into the Live session
-        exactly like a proactive check-in; Gemini phrases it naturally in the
-        user's language. Silently a no-op when no session is connected.
+        exactly like a proactive check-in; Gemini phrases it naturally in
+        English. Silently a no-op when no session is connected.
         """
         loop = getattr(self, "_loop", None)
         if not loop or not self.session:
@@ -1744,9 +1744,7 @@ class JarvisLive:
         _addr = (f"ADDRESS: Call the user '{_user_name}' — sparingly, at most "
                  f"once per reply."
                  if _user_name
-                 else "ADDRESS: \"sir\" in English, its everyday respectful "
-                      "equivalent in any other language — at most once per reply, "
-                      "and always in the language you are speaking.")
+                 else "ADDRESS: \"sir\", at most once per reply.")
         identity_ctx = (
             f"[IDENTITY]\n"
             f"You are {self._asst_name}.\n"
@@ -3083,7 +3081,6 @@ class JarvisLive:
             e = identity.get(k, {})
             return (e.get("value", "") if isinstance(e, dict) else str(e)).strip()
 
-        lang = _val("language")
         name = _val("name")
         time_str = datetime.now().strftime("%H:%M")
 
@@ -3098,12 +3095,7 @@ class JarvisLive:
             return
 
         # ── Phase 1: instant greeting ─────────────────────────────────────────
-        # The briefing fires before the user has said anything, so the
-        # remembered language is the only signal there is. It is a starting
-        # point, not a setting: the moment they reply, their language wins.
-        lang_clause = (f" Speak this greeting in {lang}, then follow the "
-                       f"user's own language from their first reply onward."
-                       if lang else "")
+        lang_clause = " Speak in English."
         name_clause = f" Address the user as {name}." if name else ""
 
         # Inject last session context if available — pop removes it so it's never repeated
@@ -3137,9 +3129,7 @@ class JarvisLive:
         # ── Phase 2: fire as soon as Phase 1 audio is done ───────────────────
         async def _deliver_brief():
             try:
-                lang_str = (f" Speak in {lang} unless the user has since "
-                            f"spoken another language, in which case use theirs."
-                            if lang else "")
+                lang_str = " Speak in English."
 
                 # Wait for the brief to finish assembling (already running) and
                 # Phase 1 turn-complete in parallel — whichever takes longer
@@ -3211,10 +3201,7 @@ class JarvisLive:
             return
         self._session_log = []    # reset immediately so the next session starts clean
 
-        memory = load_memory()
-        lang_entry = memory.get("identity", {}).get("language", {})
-        lang = (lang_entry.get("value", "") if isinstance(lang_entry, dict) else str(lang_entry)).strip()
-        lang = lang or "English"
+        lang = "English"
 
         convo = "\n".join(log[-40:])   # cap at last 40 turns to stay within token budget
         prompt = (
@@ -3268,13 +3255,10 @@ class JarvisLive:
                 if not speaking and not recent_speech:
                     try:
                         alerts = await asyncio.to_thread(monitor_check_all)
-                        memory = load_memory()
-                        lang_e = memory.get("identity", {}).get("language", {})
-                        lang   = (lang_e.get("value", "") if isinstance(lang_e, dict) else str(lang_e)).strip() or "English"
                         for alert in alerts:
                             msg = (
                                 f"{alert}\n\n"
-                                f"Inform the user about this development naturally in {lang}. "
+                                f"Inform the user about this development naturally in English. "
                                 "One brief sentence only."
                             )
                             await self.session.send_client_content(
@@ -3921,7 +3905,7 @@ class JarvisLive:
             else:
                 from core.stt import WhisperSTT
                 stt = await asyncio.to_thread(
-                    WhisperSTT, cfg.get("local_stt_model", "base"), cfg.get("local_stt_language"))
+                    WhisperSTT, cfg.get("local_stt_model", "base"), cfg.get("local_stt_language", "en"))
         except Exception as e:
             self.ui.write_log(f"ERR: Local speech-to-text failed to load: {e}")
             self.ui.set_state("SLEEPING")
