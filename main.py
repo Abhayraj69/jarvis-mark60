@@ -3599,7 +3599,16 @@ class JarvisLive:
                     self._conn_backoff = 0
                     continue
 
-                err_str = str(e)
+                # The session's TaskGroup wraps the real failure: str() of the
+                # group is only "unhandled errors in a TaskGroup", which hid
+                # quota (429) and internal (1011) errors from the model ladder
+                # below, so it never switched models.
+                def _exc_text(exc) -> str:
+                    subs = getattr(exc, "exceptions", None)
+                    if subs:
+                        return " | ".join([str(exc)] + [_exc_text(x) for x in subs])
+                    return str(exc)
+                err_str = _exc_text(e)
                 print(f"[JARVIS] Error ({type(e).__name__}): {e}")
                 traceback.print_exc()
 
@@ -3612,7 +3621,7 @@ class JarvisLive:
                     nxt = _gemini.live_model()
                     self.ui.write_log(
                         f"SYS: Switching to {nxt.split('/')[-1]} — the previous "
-                        f"model is out of quota."
+                        f"model is out of quota or failing."
                         if nxt != live_model else
                         "SYS: Every live model is rate-limited — retrying.")
                     self._conn_backoff = 0 if nxt != live_model else 15

@@ -249,6 +249,22 @@ def is_unavailable_error(err: str) -> bool:
             or "unavailable" in low or "deadline_exceeded" in low)
 
 
+# A Live model that accepts the connection but then fails every turn with
+# "1011 Internal error encountered". Seen on gemini-3.1-flash-live-preview on
+# 2026-09-30/10-01: every SPOKEN turn failed while text turns and the 2.5
+# native-audio models worked — so JARVIS reconnected forever and never answered.
+# One 1011 can be a passing blip, so it takes two within the window to step
+# down the ladder; the model is then rested for an hour and tried again.
+_INTERNAL_WINDOW_SECONDS = 10 * 60
+_INTERNAL_STRIKES = 2
+_INTERNAL_REST_SECONDS = 60 * 60
+_internal_hits: dict = {}
+
+
+def is_internal_error(err: str) -> bool:
+    return "1011" in err or "internal error encountered" in err.lower()
+
+
 def is_gone_error(err: str) -> bool:
     """The model is not there, or not ours to use — a different thing from busy."""
     low = err.lower()
@@ -283,6 +299,17 @@ def note_live_failure(model: str, err: str) -> bool:
         print(f"[Gemini] Live model {model} is unavailable to this key — "
               f"setting it aside.")
         return True
+    if is_internal_error(err):
+        now = time.monotonic()
+        hits = [t for t in _internal_hits.get(model, []) if now - t < _INTERNAL_WINDOW_SECONDS]
+        hits.append(now)
+        _internal_hits[model] = hits
+        if len(hits) >= _INTERNAL_STRIKES:
+            _internal_hits.pop(model, None)
+            _cool(model, _INTERNAL_REST_SECONDS)
+            print(f"[Gemini] Live model {model} keeps failing with internal "
+                  f"errors — switching for {_INTERNAL_REST_SECONDS // 60} minutes.")
+            return True
     return False
 
 
