@@ -137,15 +137,28 @@ def _is_transient(error: Exception) -> bool:
     return any(marker in text for marker in _TRANSIENT_MARKERS)
 
 
+# A spent DAILY quota (free tier: e.g. 20 requests/day per model) will not come
+# back in 60 s; retrying every minute just adds a failed call to each request.
+DAILY_QUOTA_COOLDOWN_S = 3600.0
+
+
+def _cooldown_for(error: Exception) -> float:
+    text = str(error)
+    if "RESOURCE_EXHAUSTED" in text and "PerDay" in text:
+        return DAILY_QUOTA_COOLDOWN_S
+    return BREAKER_COOLDOWN_S
+
+
 def _trip_breaker(kind: TaskKind, name: str, error: Exception) -> None:
+    cooldown = _cooldown_for(error)
     with _lock:
-        _breaker_until[name] = time.monotonic() + BREAKER_COOLDOWN_S
+        _breaker_until[name] = time.monotonic() + cooldown
         already_logged = name in _logged_trips
         _logged_trips.add(name)
     if not already_logged:
         # ASCII only: this can print on a cp125x console mid-tool-call.
         msg = str(error).encode("ascii", "replace").decode("ascii")[:200]
-        print(f"[Router] {kind.value}: {name} failed, skipping it for {BREAKER_COOLDOWN_S:.0f}s: {msg}")
+        print(f"[Router] {kind.value}: {name} failed, skipping it for {cooldown:.0f}s: {msg}")
 
 
 def reset_breakers() -> None:

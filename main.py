@@ -137,6 +137,15 @@ STANDBY_REENTRY_GUARD_SECONDS = 2.5
 # audio, its own voice leaking back from the speakers). Only honour it when
 # the user actually spoke or typed within this window.
 SHUTDOWN_USER_WINDOW_SECONDS = 10.0
+# ...and only when what they said actually reads as a goodbye. On Sept 30 the
+# model called shutdown_jarvis 14 times, mostly on remarks that were not one.
+# English and Hindi/Hinglish; the HUD's sleep button covers anything else.
+_FAREWELL_RE = re.compile(
+    r"\b(bye|goodbye|good ?night|see you|that'?s all|go to sleep|sleep now|"
+    r"stop listening|shut ?down|alvida|so ja(o)?|chalo bye)\b"
+    r"|अलविदा|बाय|शुभ रात्रि|सो जाओ",
+    re.IGNORECASE,
+)
 # Laptop speakers keep playing for a moment after the last chunk is handed to
 # PortAudio. Re-opening the mic the instant playback "ends" streams JARVIS's
 # own trailing words back to Gemini, which reads them as the user talking —
@@ -509,9 +518,9 @@ TOOL_DECLARATIONS = [
         "name": "think",
         "behavior": "NON_BLOCKING",
         "description": (
-            "Hand a question to your reasoning core: explanations, comparisons, "
-            "planning, maths, advice, anything needing more than two sentences "
-            "of thought. Returns the answer for you to speak in your own voice."
+            "Your reasoning core, for real analysis only: multi-step plans, detailed "
+            "comparisons, advice with tradeoffs, long explanations. Answer simple "
+            "questions and quick maths yourself."
         ),
         "parameters": {
             "type": "OBJECT",
@@ -896,13 +905,20 @@ class JarvisLive:
     def _standby_allowed(self) -> bool:
         """Guard for the model's shutdown_jarvis call — see
         SHUTDOWN_USER_WINDOW_SECONDS."""
-        if (time.monotonic() - self._last_user_speech) <= SHUTDOWN_USER_WINDOW_SECONDS:
-            return True
-        self.ui.write_log(
-            "SYS: Ignored a sleep request — you hadn't said anything just before it."
-        )
-        print("[JARVIS] 🛡️ shutdown_jarvis ignored: no recent user input")
-        return False
+        if (time.monotonic() - self._last_user_speech) > SHUTDOWN_USER_WINDOW_SECONDS:
+            self.ui.write_log(
+                "SYS: Ignored a sleep request — you hadn't said anything just before it."
+            )
+            print("[JARVIS] 🛡️ shutdown_jarvis ignored: no recent user input")
+            return False
+        if not _FAREWELL_RE.search(self._last_user_text or ""):
+            self.ui.write_log(
+                f'SYS: Ignored a sleep request — "{(self._last_user_text or "")[:60]}" '
+                "isn't a goodbye. Say 'bye Jarvis' or tap sleep."
+            )
+            print("[JARVIS] 🛡️ shutdown_jarvis ignored: last input was not a goodbye")
+            return False
+        return True
 
     def sleep(self, reason: str = "timeout") -> None:
         if not self._awake:
@@ -2040,8 +2056,14 @@ class JarvisLive:
                 rest_part.append(sentence)
 
         try:
-            from core.backend_router import load_policy_from_config
+            from core.backend_router import TaskKind, load_policy_from_config
             policy = load_policy_from_config(get_plugin_config("routing"))
+            # Flash-Lite first for think: telemetry put it at a 3.2 s median
+            # against 6.8 s for full Flash, and full Flash's free tier allows
+            # only 20 requests a day — once spent, every think paid for a
+            # failed Flash call before falling back to Lite anyway.
+            chat = [n for n in policy.get(TaskKind.CHAT, []) if n != "gemini_lite"]
+            policy[TaskKind.CHAT] = ["gemini_lite"] + chat
         except Exception:
             policy = None
 
