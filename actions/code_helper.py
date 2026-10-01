@@ -5,6 +5,8 @@ import re
 import time
 from pathlib import Path
 
+from core.backend_router import TaskKind, get_text_model, load_policy_from_config
+
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -26,17 +28,16 @@ def _get_api_key() -> str:
         return json.load(f)["gemini_api_key"]
 
 
-def _get_gemini(tier: str = gemini.SMART):
-    """Writing and fixing code is the reasoning tier; a 60s deadline because a
-    whole file can come back."""
-    class _W:
-        def generate_content(self, contents):
-            resp = gemini.call(contents, tier=tier, timeout_ms=60000)
-            if resp is None:
-                raise RuntimeError("every Gemini model on the ladder failed")
-            return resp
-
-    return _W()
+def _get_gemini(kind=TaskKind.CODE_GEN):
+    # Routed through core/backend_router.py (ROUTING settings section) so
+    # write/edit/explain/optimize try claude, then ollama, then gemini —
+    # with per-backend failover — instead of a hand-rolled claude-or-gemini
+    # switch. screen_debug is unaffected — it calls genai.Client directly
+    # for the image-input path, which none of the text-only backends here
+    # can stand in for.
+    from memory.config_manager import get_plugin_config
+    policy = load_policy_from_config(get_plugin_config("routing"))
+    return get_text_model(kind, policy=policy)
 
 
 def _clean_code(text: str) -> str:
@@ -150,7 +151,7 @@ def _detect_intent(description: str, file_path: str, code: str) -> str:
                 "  optimize     = refactor / clean up / speed up existing code\n\n"
                 "Reply with ONLY the intent word, nothing else."
             )
-            ans = _get_gemini().generate_content(prompt).text.strip().lower()
+            ans = _get_gemini(TaskKind.INTENT).generate_content(prompt).text.strip().lower()
             ans = ans.strip("`'\". \n")
             if ans in _VALID_INTENTS:
                 return ans
@@ -357,7 +358,7 @@ def _explain_action(file_path, code, player) -> str:
     if player:
         player.write_log("[Code] Analyzing code...")
 
-    model  = _get_gemini()
+    model  = _get_gemini(TaskKind.CODE_REVIEW)
     prompt = f"""Explain what this code does in simple, clear language.
 Focus on: what it does, how it works, and any important details.
 Be concise — 3 to 6 sentences maximum.
@@ -461,10 +462,8 @@ def _screen_debug_action(description, file_path, player, speak=None) -> str:
             print(f"[Code] ⚠️ Could not read file: {err}")
 
     try:
-        from google.genai import types
 
         image_bytes  = screenshot_path.read_bytes()
-        image_base64 = _image_to_base64(screenshot_path)
 
         user_question = description or "What error or problem do you see on the screen? How can it be fixed?"
 
@@ -484,16 +483,18 @@ Please:
 
 Be specific and actionable. If you see an error message, quote it exactly."""
 
-        contents = [
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-            analysis_prompt,
-        ]
-
-        response = gemini.call(contents, tier=gemini.SMART, timeout_ms=45_000)
-        if response is None:
-            return "Sir, I couldn't reach Gemini to analyse that screenshot."
-
-        analysis = (response.text or "").strip()
+        # Routed as TaskKind.VISION (Gemini Flash, Flash-Lite fallback) via
+        # core/backend_router.py so this respects the ROUTING settings and
+        # the router's circuit breaker like every other one-shot call.
+        from core.backend_router import complete
+        from memory.config_manager import get_plugin_config
+        result = complete(
+            TaskKind.VISION,
+            [{"role": "user", "content": analysis_prompt}],
+            images=[(image_bytes, "image/png")],
+            policy=load_policy_from_config(get_plugin_config("routing")),
+        )
+        analysis = (result.get("content") or "").strip()
         print(f"[Code] ✅ Screen analysis complete")
 
         try:
@@ -588,46 +589,47 @@ def code_helper(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "code_helper",
-    "description": "Writes, edits, explains, runs, or builds code files.",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
+    "description": "Write, edit, explain, run or build a single code file.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "write | edit | explain | run | build | auto (default: auto)"
+                "description": "write | edit | explain | run | build | auto (default auto)",
             },
             "description": {
                 "type": "STRING",
-                "description": "What the code should do or what change to make"
+                "description": "What the code should do or the change to make",
             },
             "language": {
                 "type": "STRING",
-                "description": "Programming language (default: python)"
+                "description": "Language (default python)",
             },
             "output_path": {
                 "type": "STRING",
-                "description": "Where to save the file"
+                "description": "Where to save",
             },
             "file_path": {
                 "type": "STRING",
-                "description": "Path to existing file for edit/explain/run/build"
+                "description": "Existing file for edit/explain/run/build",
             },
             "code": {
                 "type": "STRING",
-                "description": "Raw code string for explain"
+                "description": "Raw code for explain",
             },
             "args": {
                 "type": "STRING",
-                "description": "CLI arguments for run/build"
+                "description": "CLI args for run/build",
             },
             "timeout": {
                 "type": "INTEGER",
-                "description": "Execution timeout in seconds (default: 30)"
-            }
+                "description": "Seconds (default 30)",
+            },
         },
-        "required": [
-            "action"
-        ]
+        "required": ["action"],
     },
     "handler": code_helper,
 }

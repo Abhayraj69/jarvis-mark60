@@ -724,46 +724,44 @@ def file_controller(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "file_controller",
-    "description": "Manages files and folders: list, create, delete, move, copy, rename, read, write, find, disk usage.",
+    "description": "Files and folders: list, create, delete, move, copy, rename, read, write, find, largest, disk usage, organize desktop.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info"
+                "description": "list | create_file | create_folder | delete | move | copy | rename | read | write | find | largest | disk_usage | organize_desktop | info",
             },
             "path": {
                 "type": "STRING",
-                "description": "File/folder path or shortcut: desktop, downloads, documents, home"
+                "description": "Path or shortcut: desktop, downloads, documents, home",
             },
             "destination": {
                 "type": "STRING",
-                "description": "Destination path for move/copy"
+                "description": "Destination for move/copy",
             },
             "new_name": {
                 "type": "STRING",
-                "description": "New name for rename"
+                "description": "New name for rename",
             },
             "content": {
                 "type": "STRING",
-                "description": "Content for create_file/write"
+                "description": "Content for create_file/write",
             },
             "name": {
                 "type": "STRING",
-                "description": "File name to search for"
+                "description": "File name to find",
             },
             "extension": {
                 "type": "STRING",
-                "description": "File extension to search (e.g. .pdf)"
+                "description": "Extension to find, e.g. .pdf",
             },
             "count": {
                 "type": "INTEGER",
-                "description": "Number of results for largest"
-            }
+                "description": "Result count for largest",
+            },
         },
-        "required": [
-            "action"
-        ]
+        "required": ["action"],
     },
     "handler": file_controller,
 }

@@ -79,13 +79,42 @@ def _log(msg: str) -> None:
             pass
 
 
-def request(key: str, title: str, detail: str, run: Callable[[], str]) -> str:
-    """Park an irreversible action behind the on-screen gate.
+# Tests set this to force the gate on or off; None means "read the setting".
+_force: Optional[bool] = None
+
+
+def enabled() -> bool:
+    """The user's choice (Plugin Settings → INPUT GUARD → confirm_actions).
+    Off by default: the owner asked for JARVIS to act without asking."""
+    if _force is not None:
+        return _force
+    try:
+        from memory.config_manager import get_plugin_config
+        return bool(get_plugin_config("input_guard").get("confirm_actions", False))
+    except Exception:
+        return False
+
+
+def request(key: str, title: str, detail: str, run: Callable[[], str],
+            always: bool = False) -> str:
+    """Park an irreversible action behind the on-screen gate — or, with
+    confirmations switched off, do it now and say what was done.
+
+    `always`: ask even with confirmations off — for operations that destroy
+    data (connector deletes, force pushes), where a misheard sentence could
+    not be undone.
 
     Returns the sentence the tool should hand back to the model — phrased as an
     instruction so the assistant asks the user out loud in their own language,
     rather than reading an English string verbatim."""
     global _pending
+
+    if not always and not enabled():
+        _log(f"SYS: {title.rstrip('?')} — doing it (confirmations are off).")
+        try:
+            return run() or "Done."
+        except Exception as e:
+            return f"Failed: {title.rstrip('?')} — {e}"
 
     if _show_cb is None:
         # No interface bound (headless, or a very early call). Refuse rather
@@ -159,3 +188,13 @@ def pending_title() -> str:
         if time.monotonic() - _pending.at > TIMEOUT_SECONDS:
             return ""
         return _pending.title
+
+
+def pending_info() -> Optional[dict]:
+    """{"key", "title", "detail"} for the currently pending confirmation, or
+    None — the read-only view the dashboard's remote-state broadcast sends to
+    the phone so its bottom sheet can show the same banner the HUD does."""
+    with _lock:
+        if _pending is None or time.monotonic() - _pending.at > TIMEOUT_SECONDS:
+            return None
+        return {"key": _pending.key, "title": _pending.title, "detail": _pending.detail}

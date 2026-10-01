@@ -1062,40 +1062,43 @@ if __name__ == "__main__":
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "game_updater",
-    "description": "THE ONLY tool for ANY Steam or Epic Games request. Use for: installing, downloading, updating games, listing installed games, checking download status, scheduling updates. ALWAYS call directly for any Steam/Epic/game request. NEVER use browser_control or web_search for Steam/Epic.",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
+    "description": "The only tool for Steam/Epic: install, update, list games, download status, schedule updates. Never use the browser or web search for these.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "update | install | list | download_status | schedule | cancel_schedule | schedule_status (default: update)"
+                "description": "update | install | list | download_status | schedule | cancel_schedule | schedule_status (default update)",
             },
             "platform": {
                 "type": "STRING",
-                "description": "steam | epic | both (default: both)"
+                "description": "steam | epic | both (default both)",
             },
             "game_name": {
                 "type": "STRING",
-                "description": "Game name (partial match supported)"
+                "description": "Game name, partial ok",
             },
             "app_id": {
                 "type": "STRING",
-                "description": "Steam AppID for install (optional)"
+                "description": "Steam AppID for install",
             },
             "hour": {
                 "type": "INTEGER",
-                "description": "Hour for scheduled update 0-23 (default: 3)"
+                "description": "Scheduled hour 0-23 (default 3)",
             },
             "minute": {
                 "type": "INTEGER",
-                "description": "Minute for scheduled update 0-59 (default: 0)"
+                "description": "Scheduled minute 0-59 (default 0)",
             },
             "shutdown_when_done": {
                 "type": "BOOLEAN",
-                "description": "Shut down PC when download finishes"
-            }
+                "description": "Shut down PC after download",
+            },
         },
-        "required": []
+        "required": [],
     },
     "handler": game_updater,
 }

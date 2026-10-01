@@ -4,17 +4,28 @@ Text-to-Speech engines for MARK XL.
 EdgeTTS     – free Microsoft TTS (internet required, no API key)
 Kokoro      – fully offline neural TTS (~330 MB model)
 ElevenLabs  – cloud API (API key required, best quality)
+MacSay      – macOS's built-in `say` (offline, nothing to install; the
+              fallback voice when the configured engine is not installed)
 """
 from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import queue as _queue
 import threading
 from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
+
+from core.sentiment_adapter import SpeechProfile
+
+_NEUTRAL_PROFILE = SpeechProfile(rate_percent=0, pitch_hz=0, speed_multiplier=1.0, stability=0.5)
+
+
+def _fmt_signed(value: float, suffix: str) -> str:
+    return f"{value:+.0f}{suffix}"
 
 
 
@@ -108,18 +119,22 @@ class EdgeTTSEngine:
     def __init__(self, voice: str = "en-US-GuyNeural"):
         self.voice = voice
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, profile: Optional[SpeechProfile] = None) -> None:
         loop = asyncio.new_event_loop()
         try:
-            audio_bytes = loop.run_until_complete(self._synth(text))
+            audio_bytes = loop.run_until_complete(self._synth(text, profile or _NEUTRAL_PROFILE))
         finally:
             loop.close()
         if audio_bytes:
             _play_audio_bytes(audio_bytes)
 
-    async def _synth(self, text: str) -> bytes:
+    async def _synth(self, text: str, profile: SpeechProfile) -> bytes:
         import edge_tts
-        comm = edge_tts.Communicate(text, self.voice)
+        comm = edge_tts.Communicate(
+            text, self.voice,
+            rate=_fmt_signed(profile.rate_percent, "%"),
+            pitch=_fmt_signed(profile.pitch_hz, "Hz"),
+        )
         buf  = bytearray()
         async for chunk in comm.stream():
             if chunk["type"] == "audio":
@@ -307,10 +322,15 @@ class KokoroTTSEngine:
         except Exception as e:
             print(f"[TTS] Kokoro warmup warning: {e}")
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, profile: Optional[SpeechProfile] = None) -> None:
         with self._lock:
             if self._pipeline is None:
                 self._init()
+
+        # Sentiment-driven speed multiplier applied on top of the user's own
+        # configured speed, not in place of it — a frustrated+urgent tick
+        # should speak faster than whatever baseline the user already picked.
+        effective_speed = self.speed * (profile.speed_multiplier if profile else 1.0)
 
         # ── Concurrent synthesise + playback ────────────────────────────────
         # Kokoro generates audio chunks lazily.  Without threading, we:
@@ -323,7 +343,7 @@ class KokoroTTSEngine:
 
         def _synth():
             try:
-                for _, _, audio in self._pipeline(text, voice=self.voice, speed=self.speed):
+                for _, _, audio in self._pipeline(text, voice=self.voice, speed=effective_speed):
                     if audio is not None:
                         arr = _to_numpy(audio)
                         arr = _compress_silence(arr)
@@ -357,16 +377,17 @@ class ElevenLabsTTSEngine:
         self.api_key  = api_key
         self.voice_id = voice_id
 
-    def speak(self, text: str) -> None:
+    def speak(self, text: str, profile: Optional[SpeechProfile] = None) -> None:
         import requests
         headers = {
             "xi-api-key":   self.api_key,
             "Content-Type": "application/json",
         }
+        stability = profile.stability if profile else _NEUTRAL_PROFILE.stability
         payload = {
             "text":     text,
             "model_id": "eleven_multilingual_v2",
-            "voice_settings": {"stability": 0.5, "similarity_boost": 0.75},
+            "voice_settings": {"stability": stability, "similarity_boost": 0.75},
         }
         resp = requests.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}",
@@ -379,6 +400,34 @@ class ElevenLabsTTSEngine:
 # ---------------------------------------------------------------------------
 # Thread-safe player wrapper
 # ---------------------------------------------------------------------------
+
+class MacSayEngine:
+    """macOS `say` — offline and always present on a Mac. Robotic next to
+    the others, but it means Local Mode can always speak."""
+
+    def __init__(self, voice: str = ""):
+        self.voice = voice
+        self._proc = None
+
+    def speak(self, text: str, profile: Optional[SpeechProfile] = None) -> None:
+        import subprocess
+        p = profile or _NEUTRAL_PROFILE
+        rate = int(185 * (1 + p.rate_percent / 100.0) * (p.speed_multiplier or 1.0))
+        cmd = ["say", "-r", str(max(90, min(rate, 320)))]
+        if self.voice:
+            cmd += ["-v", self.voice]
+        self._proc = subprocess.Popen(cmd + [text])
+        self._proc.wait()
+        self._proc = None
+
+    def stop(self) -> None:
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
 
 class TTSPlayer:
     """
@@ -400,14 +449,20 @@ class TTSPlayer:
         text:     str,
         on_start: Optional[Callable] = None,
         on_done:  Optional[Callable] = None,
+        profile:  Optional[SpeechProfile] = None,
     ) -> None:
-        """Synthesise and play text. BLOCKING – call from a dedicated thread."""
+        """Synthesise and play text. BLOCKING – call from a dedicated thread.
+
+        `profile` (see core.sentiment_adapter.get_speech_profile) lets the
+        caller tone-match delivery — rate, pitch, or voice stability —
+        instead of always reading text at one flat, neutral pace. Omitted or
+        None reads exactly as before (each engine's own neutral default)."""
         try:
             with self._lock:
                 self._playing = True
             if on_start:
                 on_start()
-            self._engine.speak(text)
+            self._engine.speak(text, profile)
         except Exception as e:
             print(f"[TTS] Error: {e}")
         finally:
@@ -418,6 +473,9 @@ class TTSPlayer:
 
     def stop(self) -> None:
         sd.stop()
+        engine_stop = getattr(self._engine, "stop", None)
+        if callable(engine_stop):
+            engine_stop()
         with self._lock:
             self._playing = False
 
@@ -426,8 +484,23 @@ class TTSPlayer:
 # Factory
 # ---------------------------------------------------------------------------
 
+def _installed(module: str) -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(module) is not None
+    except Exception:
+        return False
+
+
 def create_tts_player(config: dict) -> TTSPlayer:
     engine_name = config.get("tts_engine", "edgetts").lower()
+    # The configured engine is not installed: speak with macOS `say` rather
+    # than not at all.
+    needs = {"kokoro": "kokoro", "elevenlabs": "requests"}.get(engine_name, "edge_tts")
+    if engine_name == "say" or (not _installed(needs) and sys.platform == "darwin"):
+        if engine_name != "say":
+            print(f"[TTS] {engine_name} is not installed — using macOS 'say'.")
+        return TTSPlayer(MacSayEngine(voice=config.get("say_voice", "")))
     if engine_name == "kokoro":
         voice  = config.get("tts_voice", "af_heart")
         speed  = float(config.get("tts_speed", 1.0))

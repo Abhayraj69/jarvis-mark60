@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Arc Sentinel</title>
+<style>
+  /*
+    Arc Sentinel — a small frameless always-on-top window (see
+    widget/wake_widget_daemon.py). Three sizes, switched from the widget
+    itself and remembered between launches:
+
+      full     the radar card
+      compact  a single-row pill: orb, status, mic/interrupt
+      mini     just the orb — click it to bring the last size back
+
+    On macOS (?mac=1) the window is transparent and the daemon puts a native
+    NSVisualEffectView (HUD material) behind the page, so the card is real
+    system frosted glass with a native drop shadow — the page itself only
+    draws a faint tint on top. Elsewhere the card paints its own dark fill.
+
+    --accent is overridden at load time from the daemon's ?accent= param so it
+    tracks the colour picked in JARVIS's own Customise panel.
+  */
+  :root{
+    --accent:      #00d4ff;
+    --accent-2:    #7fe4ff;
+    --accent-soft: rgba(0,212,255,.18);
+
+    --label:     rgba(255,255,255,.92);
+    --secondary: rgba(235,235,245,.60);
+    --tertiary:  rgba(235,235,245,.32);
+    --separator: rgba(255,255,255,.10);
+    --fill:      rgba(255,255,255,.08);
+    --fill-hover:rgba(255,255,255,.14);
+
+    /* macOS system colours (dark appearance) */
+    --green: #30d158;
+    --red:   #ff453a;
+    --gray:  #8e8e93;
+
+    --font:      -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+    --radius: 18px;
+  }
+
+  *{ box-sizing: border-box; }
+  html, body{ width: 100%; height: 100%; margin: 0; overflow: hidden; }
+
+  body{
+    background: #111318;
+    color: var(--label);
+    font-family: var(--font);
+    -webkit-font-smoothing: antialiased;
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+  }
+  /* Native vibrancy sits behind a transparent page on macOS. */
+  body.mac{ background: transparent; }
+
+  .widget{
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: var(--radius);
+    overflow: hidden;
+    background: linear-gradient(180deg, rgba(40,44,52,.96), rgba(22,24,30,.96));
+    box-shadow: inset 0 0 0 .5px rgba(255,255,255,.14);
+  }
+  body.mac .widget{
+    /* A whisper of tint over the system material, plus the hairline
+       highlight macOS draws around HUD panels. */
+    background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.10));
+  }
+
+  /* ── shared: the orb ─────────────────────────────────────────────────── */
+  .orb{
+    position: relative;
+    flex-shrink: 0;
+    border-radius: 50%;
+    --state: var(--accent);
+  }
+  .orb.awake   { --state: var(--green); }
+  .orb.sleeping{ --state: var(--gray); }
+  .orb.muted   { --state: var(--red); }
+  .orb.offline { --state: var(--tertiary); }
+  .orb.speaking{ --state: var(--accent); }
+
+  .orb .rings{ position: absolute; inset: 0; width: 100%; height: 100%; }
+  .orb .rings circle{ fill: none; stroke: var(--accent); }
+  .orb .r1{ stroke-width: .6; opacity: .22; }
+  .orb .r2{ stroke-width: .6; opacity: .30; stroke-dasharray: 3 5; }
+  .orb .r3{ stroke-width: .8; opacity: .40; stroke-dasharray: 40 14 10 22; transform: rotate(-60deg); transform-origin: 50px 50px; }
+
+  .orb .sweep{
+    position: absolute; inset: 0; border-radius: 50%;
+    background: conic-gradient(from 0deg, transparent 0deg 270deg,
+                var(--accent-soft) 320deg, var(--accent-2) 358deg, transparent 360deg);
+    opacity: .7;
+    animation: spin 3s linear infinite;
+  }
+  .orb .core{
+    position: absolute; left: 50%; top: 50%;
+    width: 46%; height: 46%;
+    transform: translate(-50%,-50%);
+    border-radius: 50%;
+    background:
+      radial-gradient(circle at 50% 35%, rgba(255,255,255,.18), transparent 60%),
+      radial-gradient(circle, rgba(20,24,32,.9), rgba(10,12,16,.95));
+    box-shadow: inset 0 0 0 .5px rgba(255,255,255,.18), 0 0 18px -4px var(--accent-soft);
+  }
+  .orb .core::after{
+    content: ''; position: absolute; left: 50%; top: 50%;
+    width: 26%; height: 26%; border-radius: 50%;
+    transform: translate(-50%,-50%);
+    background: var(--state);
+    box-shadow: 0 0 10px 2px color-mix(in srgb, var(--state) 55%, transparent);
+    animation: breathe 2.4s ease-in-out infinite;
+    transition: background .3s ease;
+  }
+  .orb.sleeping .sweep, .orb.offline .sweep{ animation-play-state: paused; opacity: .25; }
+  .orb.sleeping .core::after, .orb.offline .core::after{ animation: none; }
+  .orb.speaking .core::after{ animation-duration: .9s; }
+
+  @keyframes spin{ to{ transform: rotate(360deg); } }
+  @keyframes breathe{ 0%,100%{ transform: translate(-50%,-50%) scale(1); } 50%{ transform: translate(-50%,-50%) scale(1.25); } }
+
+  /* ── shared: icon buttons ────────────────────────────────────────────── */
+  .icon-btn{
+    -webkit-app-region: no-drag;
+    width: 22px; height: 22px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 50%;
+    background: transparent;
+    color: var(--secondary);
+    cursor: pointer;
+    padding: 0;
+    transition: background .15s ease, color .15s ease;
+  }
+  .icon-btn:hover{ background: var(--fill-hover); color: var(--label); }
+  .icon-btn svg{ width: 12px; height: 12px; }
+  .icon-btn.close:hover{ background: rgba(255,69,58,.22); color: var(--red); }
+
+  .pill-btn{
+    -webkit-app-region: no-drag;
+    flex: 1 1 0; min-width: 0;
+    height: 30px;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    border: 0; border-radius: 9px;
+    background: var(--fill);
+    color: var(--label);
+    font: 500 12px/1 var(--font);
+    cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    box-shadow: inset 0 0 0 .5px rgba(255,255,255,.08);
+    transition: background .15s ease, color .15s ease;
+  }
+  .pill-btn svg{ width: 13px; height: 13px; flex-shrink: 0; }
+  .pill-btn:hover:not(:disabled){ background: var(--fill-hover); }
+  .pill-btn:disabled{ opacity: .35; cursor: default; }
+  .pill-btn.on   { color: var(--green); }
+  .pill-btn.off  { color: var(--red); background: rgba(255,69,58,.14); }
+  .pill-btn.live { color: #fff; background: var(--red); }
+  .pill-btn:focus-visible, .icon-btn:focus-visible{ outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .round-btn{
+    -webkit-app-region: no-drag;
+    width: 28px; height: 28px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; border-radius: 50%;
+    background: var(--fill);
+    color: var(--label);
+    cursor: pointer; padding: 0;
+    box-shadow: inset 0 0 0 .5px rgba(255,255,255,.08);
+    transition: background .15s ease, color .15s ease;
+  }
+  .round-btn svg{ width: 13px; height: 13px; }
+  .round-btn:hover:not(:disabled){ background: var(--fill-hover); }
+  .round-btn:disabled{ opacity: .35; cursor: default; }
+  .round-btn.on  { color: var(--green); }
+  .round-btn.off { color: var(--red); background: rgba(255,69,58,.14); }
+  .round-btn.live{ color: #fff; background: var(--red); }
+
+  /* ── full ────────────────────────────────────────────────────────────── */
+  .full{
+    display: flex; flex-direction: column;
+    height: 100%;
+    padding: 10px 12px 12px;
+  }
+  .titlebar{
+    display: flex; align-items: center; justify-content: space-between;
+    height: 22px;
+  }
+  .title{
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; color: var(--label); letter-spacing: -.01em;
+  }
+  .state-tag{
+    font-size: 10px; font-weight: 600;
+    padding: 2px 6px; border-radius: 5px;
+    background: var(--fill); color: var(--secondary);
+    text-transform: uppercase; letter-spacing: .04em;
+  }
+  .state-tag.awake   { color: var(--green); background: rgba(48,209,88,.14); }
+  .state-tag.sleeping{ color: var(--secondary); }
+  .state-tag.offline { color: var(--tertiary); }
+  .titlebar .tools{ display: flex; gap: 2px; }
+
+  .full .center{
+    flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 12px;
+  }
+  .full .orb{ width: 112px; height: 112px; }
+  .status{ text-align: center; }
+  .status-label{ font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  .status-line{ margin-top: 3px; font-size: 11px; color: var(--secondary); }
+  .full .controls{ display: flex; gap: 6px; }
+
+  /* ── compact ─────────────────────────────────────────────────────────── */
+  .compact{
+    display: none;
+    height: 100%;
+    align-items: center; gap: 10px;
+    padding: 0 10px 0 10px;
+  }
+  .compact .orb{ width: 42px; height: 42px; }
+  .compact .text{ flex: 1 1 auto; min-width: 0; }
+  .compact .status-label{ font-size: 13px; }
+  .compact .status-line{ font-size: 11px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .compact .actions{ display: flex; align-items: center; gap: 4px; }
+  .compact .tools{ display: flex; flex-direction: column; gap: 0; margin-left: 2px; }
+  .compact .tools .icon-btn{ width: 18px; height: 18px; }
+  .compact .tools .icon-btn svg{ width: 10px; height: 10px; }
+
+  /* ── mini ────────────────────────────────────────────────────────────── */
+  .mini{
+    display: none;
+    height: 100%;
+    align-items: center; justify-content: center;
+    cursor: pointer;
+  }
+  .mini .orb{ width: 46px; height: 46px; }
+  .mini:hover .orb{ transform: scale(1.06); }
+  .mini .orb{ transition: transform .15s ease; }
+
+  body[data-mode="full"]    .full   { display: flex; }
+  body[data-mode="full"]    .compact, body[data-mode="full"] .mini{ display: none; }
+  body[data-mode="compact"] .full   { display: none; }
+  body[data-mode="compact"] .compact{ display: flex; }
+  body[data-mode="mini"]    .full   { display: none; }
+  body[data-mode="mini"]    .mini   { display: flex; }
+
+  body[data-mode="compact"]{ --radius: 32px; }
+  body[data-mode="mini"]   { --radius: 50%; }
+
+  @media (prefers-reduced-motion: reduce){
+    .orb .sweep, .orb .core::after{ animation: none !important; }
+  }
+</style>
+</head>
+<body data-mode="full">
+  <!-- Icons: SF Symbols-style, stroked, currentColor. -->
+  <svg width="0" height="0" style="position:absolute">
+    <defs>
+      <symbol id="i-mic" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="5.5" y="1.5" width="5" height="8.5" rx="2.5"/><path d="M3 8a5 5 0 0 0 10 0M8 13v2"/></g></symbol>
+      <symbol id="i-mic-off" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M10.5 6.5V4a2.5 2.5 0 0 0-5 0v4a2.5 2.5 0 0 0 4.2 1.8M3 8a5 5 0 0 0 8.2 3.8M13 8a5 5 0 0 1-.3 1.7M8 13v2M2 2l12 12"/></g></symbol>
+      <symbol id="i-stop" viewBox="0 0 16 16"><rect x="3.5" y="3.5" width="9" height="9" rx="2" fill="currentColor"/></symbol>
+      <symbol id="i-close" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-shrink" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5v4h4M6.5 13.5v-4h-4M9.5 6.5l4.5-4.5M6.5 9.5L2 14"/></g></symbol>
+      <symbol id="i-expand" viewBox="0 0 16 16"><g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2h4v4M6 14H2v-4M14 2L9 7M2 14l5-5"/></g></symbol>
+      <symbol id="i-dot" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" fill="currentColor"/></symbol>
+      <symbol id="i-more" viewBox="0 0 16 16"><g fill="currentColor"><circle cx="3.5" cy="8" r="1.4"/><circle cx="8" cy="8" r="1.4"/><circle cx="12.5" cy="8" r="1.4"/></g></symbol>
+    </defs>
+  </svg>
+
+  <div class="widget">
+    <!-- full -->
+    <div class="full">
+      <div class="titlebar">
+        <div class="title">Sentinel <span class="state-tag" data-bind="tag">Awake</span></div>
+        <div class="tools">
+          <button class="icon-btn" data-size="compact" title="Compact"><svg><use href="#i-shrink"/></svg></button>
+          <button class="icon-btn" data-act="menu" title="Size & layout  (⌘− / ⌘=)"><svg><use href="#i-more"/></svg></button>
+          <button class="icon-btn close" data-act="close" title="Hide  (or say “bye jarvis”)"><svg><use href="#i-close"/></svg></button>
+        </div>
+      </div>
+      <div class="center">
+        <div class="orb" data-bind="orb">
+          <svg class="rings" viewBox="0 0 100 100">
+            <circle class="r1" cx="50" cy="50" r="48"/>
+            <circle class="r2" cx="50" cy="50" r="40"/>
+            <circle class="r3" cx="50" cy="50" r="32"/>
+          </svg>
+          <div class="sweep"></div>
+          <div class="core"></div>
+        </div>
+        <div class="status">
+          <div class="status-label" data-bind="label">Listening</div>
+          <div class="status-line" data-bind="line">Say “bye jarvis” to dismiss</div>
+        </div>
+      </div>
+      <div class="controls">
+        <button class="pill-btn" data-act="mic" title="Mute / unmute JARVIS’s microphone"><svg><use href="#i-mic"/></svg><span>Mic</span></button>
+        <button class="pill-btn" data-act="interrupt" title="Stop JARVIS mid-speech"><svg><use href="#i-stop"/></svg><span>Interrupt</span></button>
+      </div>
+    </div>
+
+    <!-- compact -->
+    <div class="compact">
+      <div class="orb" data-bind="orb">
+        <svg class="rings" viewBox="0 0 100 100">
+          <circle class="r1" cx="50" cy="50" r="48"/>
+          <circle class="r3" cx="50" cy="50" r="36"/>
+        </svg>
+        <div class="sweep"></div>
+        <div class="core"></div>
+      </div>
+      <div class="text">
+        <div class="status-label" data-bind="label">Listening</div>
+        <div class="status-line" data-bind="line">Say “bye jarvis” to dismiss</div>
+      </div>
+      <div class="actions">
+        <button class="round-btn" data-act="mic" title="Mute / unmute JARVIS’s microphone"><svg><use href="#i-mic"/></svg></button>
+        <button class="round-btn" data-act="interrupt" title="Stop JARVIS mid-speech"><svg><use href="#i-stop"/></svg></button>
+      </div>
+      <div class="tools">
+        <button class="icon-btn" data-size="full" title="Expand"><svg><use href="#i-expand"/></svg></button>
+        <button class="icon-btn" data-act="menu" title="Size & layout  (⌘− / ⌘=)"><svg><use href="#i-more"/></svg></button>
+      </div>
+    </div>
+
+    <!-- mini -->
+    <div class="mini" id="mini" title="Click to expand · right-click for size">
+      <div class="orb" data-bind="orb">
+        <div class="sweep"></div>
+        <div class="core"></div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const params = new URLSearchParams(location.search);
+  if (params.get('mac') === '1') document.body.classList.add('mac');
+
+  const api = () => (window.pywebview && window.pywebview.api) || null;
+  const all = sel => document.querySelectorAll(sel);
+
+  // ── Size modes ─────────────────────────────────────────────────────────
+  //    The daemon owns the real window size (and remembers the choice); the
+  //    page just switches layouts. Initial mode comes in as ?mode=.
+  const MODES = ['full', 'compact', 'mini'];
+  let mode = MODES.includes(params.get('mode')) ? params.get('mode') : 'full';
+  let lastLarge = mode === 'mini' ? 'compact' : mode;   // what the mini orb expands back to
+
+  function setMode(next){
+    if (!MODES.includes(next) || next === mode) return;
+    if (next !== 'mini') lastLarge = next;
+    mode = next;
+    document.body.dataset.mode = next;
+    const a = api();
+    if (a && a.set_mode) a.set_mode(next);
+  }
+  document.body.dataset.mode = mode;
+  window.setMode = setMode;   // also driven by the native right-click menu
+
+  // ── Size (scale) ───────────────────────────────────────────────────────
+  //    The page zooms by the same factor the daemon resizes the window by,
+  //    so the CSS layout stays at its authored size and just renders smaller.
+  const SCALES = [0.6, 0.7, 0.85, 1.0];
+  const nearest = v => SCALES.reduce((a, b) => Math.abs(b - v) < Math.abs(a - v) ? b : a);
+  let scale = nearest(parseFloat(params.get('scale')) || 1);
+  const applyZoom = s => { document.documentElement.style.zoom = s; };
+  applyZoom(scale);
+
+  function setScale(next){
+    next = nearest(next);
+    if (next === scale) return;
+    scale = next;
+    applyZoom(scale);
+    const a = api();
+    if (a && a.set_scale) a.set_scale(scale);
+  }
+  window.setScale = setScale;
+  const stepScale = dir => setScale(SCALES[Math.max(0, Math.min(SCALES.length - 1, SCALES.indexOf(scale) + dir))]);
+
+  async function openMenu(){
+    const a = api();
+    // No native menu (non-macOS): step down a size, wrapping back to 100%.
+    const shown = a && a.show_menu ? await a.show_menu() : false;
+    if (!shown) setScale(scale === SCALES[0] ? 1.0 : SCALES[SCALES.indexOf(scale) - 1]);
+  }
+  all('[data-act="menu"]').forEach(b => b.addEventListener('click', openMenu));
+  document.addEventListener('contextmenu', e => { e.preventDefault(); openMenu(); });
+
+  // ⌘− smaller, ⌘= / ⌘+ larger, ⌘0 default — like zooming any Mac app.
+  document.addEventListener('keydown', e => {
+    if (!(e.metaKey || e.ctrlKey)) return;
+    if (e.key === '-' || e.key === '_')      { stepScale(-1); e.preventDefault(); }
+    else if (e.key === '=' || e.key === '+') { stepScale(+1); e.preventDefault(); }
+    else if (e.key === '0')                  { setScale(1.0); e.preventDefault(); }
+  });
+
+  all('[data-size]').forEach(b => b.addEventListener('click', () => setMode(b.dataset.size)));
+
+  // Mini orb: click expands — but not when the click was the end of a
+  // window drag (easy_drag moves the window on any mouse drag).
+  (function(){
+    const mini = document.getElementById('mini');
+    let sx = 0, sy = 0;
+    mini.addEventListener('mousedown', e => { sx = e.screenX; sy = e.screenY; });
+    mini.addEventListener('click', e => {
+      if (Math.abs(e.screenX - sx) + Math.abs(e.screenY - sy) > 4) return;
+      setMode(lastLarge);
+    });
+  })();
+
+  all('[data-act="close"]').forEach(b => b.addEventListener('click', () => {
+    const a = api(); if (a) a.say_bye();
+  }));
+
+  // ── Accent colour: ?accent=#rrggbb, from JARVIS's Customise panel. ─────
+  (function applyAccent(){
+    const accent = params.get('accent');
+    if (!accent || !/^#[0-9a-fA-F]{6}$/.test(accent)) return;
+    const [r,g,b] = [1,3,5].map(i => parseInt(accent.slice(i, i+2), 16));
+    const lift = v => Math.round(v + (255 - v) * .45);
+    const root = document.documentElement.style;
+    root.setProperty('--accent', accent);
+    root.setProperty('--accent-2', `rgb(${lift(r)},${lift(g)},${lift(b)})`);
+    root.setProperty('--accent-soft', `rgba(${r},${g},${b},.18)`);
+  })();
+
+  // ── Live state from JARVIS's loopback control channel
+  //    (core/local_control.py). Loopback only, so no token. ────────────────
+  const CONTROL = 'http://127.0.0.1:8765';
+  let reachable = false;
+
+  const setText = (key, text) => all(`[data-bind="${key}"]`).forEach(el => el.textContent = text);
+  const setOrb  = cls => all('[data-bind="orb"]').forEach(el => el.className = 'orb ' + cls);
+  const micButtons = () => all('[data-act="mic"]');
+  const intButtons = () => all('[data-act="interrupt"]');
+
+  function paintMic(muted){
+    micButtons().forEach(b => {
+      b.disabled = false;
+      b.classList.remove('on', 'off');
+      b.classList.add(muted ? 'off' : 'on');
+      b.querySelector('use').setAttribute('href', muted ? '#i-mic-off' : '#i-mic');
+      const label = b.querySelector('span');
+      if (label) label.textContent = muted ? 'Muted' : 'Mic On';
+    });
+  }
+
+  function renderState(s){
+    reachable = true;
+    paintMic(!!s.muted);
+    intButtons().forEach(b => { b.disabled = false; b.classList.toggle('live', !!s.speaking); });
+
+    all('[data-bind="tag"]').forEach(el => {
+      el.textContent = s.awake ? 'Awake' : 'Sleeping';
+      el.className = 'state-tag ' + (s.awake ? 'awake' : 'sleeping');
+    });
+
+    if (s.speaking){
+      setOrb('speaking');
+      setText('label', 'Speaking');
+      setText('line', 'Tap Interrupt to cut in');
+    } else if (!s.awake){
+      setOrb('sleeping');
+      setText('label', 'Sleeping');
+      setText('line', 'Say “Hey Jarvis” to wake');
+    } else {
+      setOrb(s.muted ? 'muted' : 'awake');
+      setText('label', s.muted ? 'Mic muted' : 'Listening');
+      setText('line', 'Say “bye jarvis” to dismiss');
+    }
+  }
+
+  function renderOffline(){
+    reachable = false;
+    micButtons().forEach(b => {
+      b.disabled = true; b.classList.remove('on', 'off');
+      b.querySelector('use').setAttribute('href', '#i-mic');
+      const label = b.querySelector('span'); if (label) label.textContent = 'Mic';
+    });
+    intButtons().forEach(b => { b.disabled = true; b.classList.remove('live'); });
+    all('[data-bind="tag"]').forEach(el => { el.textContent = 'Offline'; el.className = 'state-tag offline'; });
+    setOrb('offline');
+    setText('label', 'Offline');
+    setText('line', 'JARVIS isn’t running');
+  }
+
+  async function pollStatus(){
+    try {
+      const r = await fetch(CONTROL + '/status');
+      renderState(await r.json());
+    } catch (e) {
+      renderOffline();
+    }
+  }
+
+  micButtons().forEach(b => b.addEventListener('click', async () => {
+    if (!reachable) return;
+    try { await fetch(CONTROL + '/mute', { method: 'POST' }); } catch (e) {}
+    pollStatus();
+  }));
+  intButtons().forEach(b => b.addEventListener('click', async () => {
+    if (!reachable) return;
+    try { await fetch(CONTROL + '/interrupt', { method: 'POST' }); } catch (e) {}
+    pollStatus();
+  }));
+
+  pollStatus();
+  setInterval(pollStatus, 900);
+</script>
+</body>
+</html>

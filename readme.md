@@ -1,6 +1,11 @@
 # ⚙️ MARK LV (55)
 ### The Ultimate Cross-Platform Personal AI Assistant — By FatihMakes
 
+> 🔀 **This is a fork.** It is FatihMakes' Mark LV plus the Mark LIII upgrades
+> (Study Mode, background tools, offline fallback, the `think` core and more).
+> What this fork adds is listed in
+> [`docs/FEATURES_AND_NEXT_STEPS.md`](docs/FEATURES_AND_NEXT_STEPS.md).
+
 > 📺 **[Watch the full setup video on YouTube](https://www.youtube.com/@FatihMakes)**
 
 A real-time voice AI that can hear, see, speak, and control your computer — on any OS. Supports Windows, macOS, and Linux. Built on the Gemini Live API for native audio streaming, delivering zero subscriptions and total digital autonomy.
@@ -274,8 +279,8 @@ It is held in memory only, deliberately: writing it to disk would make a fresh l
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/FatihMakes/Mark-LV.git
-cd Mark-LV
+git clone https://github.com/Abhayraj69/jarvis-mark60.git
+cd jarvis-mark60
 python setup.py        # installs deps for YOUR OS + the browser automation engine
 python main.py
 ```

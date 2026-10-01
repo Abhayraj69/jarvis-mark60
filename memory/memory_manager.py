@@ -229,8 +229,8 @@ def format_memory_for_prompt(memory: dict | None) -> str:
             # English" line written months ago reads like a standing order and
             # was one of the reasons a Turkish question came back in English.
             core_lines.append(
-                f"Has spoken to you in: {val} (an observation about the past — "
-                f"always answer in the language of their CURRENT message)")
+                f"Has spoken to you in: {val} (past observation only — "
+                f"reply in the language of their current message)")
         else:
             core_lines.append(f"{field.title()}: {val}")
     for key, entry in identity.items():
@@ -299,7 +299,7 @@ def format_memory_for_prompt(memory: dict | None) -> str:
         return ""
 
     out = [
-        "[WHAT YOU KNOW ABOUT THIS PERSON — use naturally, never recite like a list]",
+        "[ABOUT THE USER — known quietly, as a long-serving aide would; never recited]",
         *core_lines,
     ]
 
@@ -314,8 +314,7 @@ def format_memory_for_prompt(memory: dict | None) -> str:
         if names:
             out.append("")
             out.append(
-                "[ALSO REMEMBERED — values not shown here. Call recall_memory "
-                "with a keyword to read any of these before saying you do not know]"
+                "[ALSO REMEMBERED — not shown here; recall_memory reads any of these]"
             )
             out.append(", ".join(names)
                        + (f" (+{len(indexed) - len(names)} more)"
@@ -445,6 +444,12 @@ def save_session_summary(summary: str, language: str = "") -> None:
         entry["language"] = language
     sessions.append(entry)
     memory["sessions"] = sessions[-_SESSION_MAX:]
+    # A running count of every session ever summarised, never trimmed by
+    # _SESSION_MAX. `sessions` itself only ever holds the last few, so it
+    # can't answer "how long have we known each other" — the proactive
+    # engine uses this count to gate how much old-friend familiarity a
+    # check-in is allowed to assume (see ProactiveEngine.build_prompt).
+    memory["session_count"] = int(memory.get("session_count", 0) or 0) + 1
     with _lock:
         MEMORY_PATH.parent.mkdir(parents=True, exist_ok=True)
         MEMORY_PATH.write_text(
@@ -477,3 +482,28 @@ def pop_last_session() -> dict | None:
         except Exception as e:
             print(f"[Memory] ⚠️ pop_last_session error: {e}")
             return None
+
+
+def peek_recent_sessions(limit: int = 2) -> list[dict]:
+    """Read the most recent session summaries WITHOUT consuming them — unlike
+    pop_last_session(), which the morning briefing uses exactly once per entry.
+    A mid-day proactive check-in needs to look at the same history repeatedly
+    (it fires many times across a day) without racing the briefing for the
+    same entries, so it only ever reads. Most recent last, oldest first."""
+    memory   = load_memory()
+    sessions = memory.get("sessions", [])
+    if not isinstance(sessions, list) or not sessions:
+        return []
+    return sessions[-max(1, limit):]
+
+
+def get_session_count() -> int:
+    """How many sessions have ever been summarised — a cheap proxy for 'how
+    long have we known each other', used to gate how much familiarity a
+    proactive check-in is allowed to assume. A relationship two sessions old
+    hasn't earned old-friend banter yet."""
+    memory = load_memory()
+    try:
+        return int(memory.get("session_count", 0) or 0)
+    except (TypeError, ValueError):
+        return 0

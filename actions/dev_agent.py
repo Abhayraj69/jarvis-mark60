@@ -5,6 +5,8 @@ import re
 import time
 from pathlib import Path
 
+from core.backend_router import TaskKind
+
 
 def get_base_dir():
     if getattr(sys, "frozen", False):
@@ -13,31 +15,19 @@ def get_base_dir():
 
 
 BASE_DIR         = get_base_dir()
-API_CONFIG_PATH  = BASE_DIR / "config" / "api_keys.json"
 PROJECTS_DIR     = Path.home() / "Desktop" / "JarvisProjects"
 MAX_FIX_ATTEMPTS = 5
-# Model choice, timeout and fallback ladder all live in core/gemini.py.
-from core import gemini
-
-MODEL_PLANNER    = gemini.SMART
-MODEL_WRITER     = gemini.SMART
-
-def _get_api_key() -> str:
-    with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
-        return json.load(f)["gemini_api_key"]
 
 
-def _get_model(model_name: str = gemini.SMART):
-    """Planning and writing whole files — the reasoning tier, and a long
-    deadline because the answer is a source file rather than a sentence."""
-    class _W:
-        def generate_content(self, contents):
-            resp = gemini.call(contents, tier=model_name, timeout_ms=60000)
-            if resp is None:
-                raise RuntimeError("every Gemini model on the ladder failed")
-            return resp
-
-    return _W()
+def _get_model(kind=None):
+    # Routed through core/backend_router.py (ROUTING settings section) so
+    # planning/writing/fixing tries claude, then ollama, then gemini — with
+    # per-backend failover — instead of a hand-rolled claude-or-gemini
+    # switch. Same .generate_content(prompt).text shape either way.
+    from core.backend_router import TaskKind, get_text_model, load_policy_from_config
+    from memory.config_manager import get_plugin_config
+    policy = load_policy_from_config(get_plugin_config("routing"))
+    return get_text_model(kind or TaskKind.CODE_GEN, policy=policy)
 
 
 def _strip_fences(text: str) -> str:
@@ -107,7 +97,7 @@ class RateLimitError(Exception):
 
 
 def _plan_project(description: str, language: str) -> dict:
-    model = _get_model(MODEL_PLANNER)
+    model = _get_model(TaskKind.CODE_GEN)
 
     prompt = f"""You are a senior software architect. Create a minimal, complete file plan for this project.
 
@@ -163,7 +153,7 @@ def _write_file(
     project_dir: Path,
     already_written: dict[str, str],
 ) -> str:
-    model = _get_model(MODEL_WRITER)
+    model = _get_model(TaskKind.CODE_GEN)
 
     file_path = file_info["path"]
     file_desc = file_info.get("description", "")
@@ -360,7 +350,7 @@ def _fix_files(
     entry_point: str,
 ) -> dict[str, str]:
 
-    model = _get_model(MODEL_PLANNER)
+    model = _get_model(TaskKind.CODE_GEN)
 
     error_file, error_line = _parse_traceback(error_output, list(file_codes.keys()))
     error_type = _classify_error(error_output)
@@ -610,30 +600,31 @@ def dev_agent(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "dev_agent",
-    "description": "Builds complete multi-file projects from scratch: plans, writes files, installs deps, opens VSCode, runs and fixes errors.",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
+    "description": "Build a complete multi-file project: plan, write files, install deps, open VS Code, run and fix errors. For single files use code_helper.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "description": {
                 "type": "STRING",
-                "description": "What the project should do"
+                "description": "What the project should do",
             },
             "language": {
                 "type": "STRING",
-                "description": "Programming language (default: python)"
+                "description": "Language (default python)",
             },
             "project_name": {
                 "type": "STRING",
-                "description": "Optional project folder name"
+                "description": "Optional folder name",
             },
             "timeout": {
                 "type": "INTEGER",
-                "description": "Run timeout in seconds (default: 30)"
-            }
+                "description": "Run timeout seconds (default 30)",
+            },
         },
-        "required": [
-            "description"
-        ]
+        "required": ["description"],
     },
     "handler": dev_agent,
 }

@@ -2,6 +2,7 @@ import time
 import subprocess
 import platform
 import shutil
+from pathlib import Path
 
 try:
     import psutil
@@ -13,6 +14,9 @@ _SYSTEM = platform.system()
 
 _APP_ALIASES: dict[str, dict[str, str]] = {
 
+    # macOS has no app called "Camera" — Photo Booth is the built-in one.
+    "camera":             {"Windows": "microsoft.windows.camera:", "Darwin": "Photo Booth",  "Linux": "cheese"},
+    "webcam":             {"Windows": "microsoft.windows.camera:", "Darwin": "Photo Booth",  "Linux": "cheese"},
     "chrome":             {"Windows": "chrome",                  "Darwin": "Google Chrome",        "Linux": "google-chrome"},
     "google chrome":      {"Windows": "chrome",                  "Darwin": "Google Chrome",        "Linux": "google-chrome"},
     "firefox":            {"Windows": "firefox",                 "Darwin": "Firefox",              "Linux": "firefox"},
@@ -77,7 +81,23 @@ def _normalize(raw: str) -> str:
 
     return raw  
 
-def _launch_windows(app_name: str) -> bool:
+def _launch_windows(app_name: str, file_path: str = "") -> bool:
+
+    if file_path:
+        # List-form Popen (no shell=True) so the path is passed as a single
+        # argument to CreateProcess rather than interpolated into a shell
+        # command line, which would be a command-injection risk.
+        try:
+            subprocess.Popen(
+                [app_name, file_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            time.sleep(1.0)
+            return True
+        except Exception as e:
+            print(f"[open_app] subprocess with file_path failed: {e}")
+        return False
 
     if shutil.which(app_name) or shutil.which(app_name.split(".")[0]):
         try:
@@ -116,7 +136,20 @@ def _launch_windows(app_name: str) -> bool:
     return False
 
 
-def _launch_macos(app_name: str) -> bool:
+def _launch_macos(app_name: str, file_path: str = "") -> bool:
+
+    if file_path:
+        try:
+            result = subprocess.run(
+                ["open", "-a", app_name, file_path],
+                capture_output=True, timeout=8
+            )
+            if result.returncode == 0:
+                time.sleep(1.0)
+                return True
+        except Exception as e:
+            print(f"[open_app] open -a with file_path failed: {e}")
+        return False
 
     try:
         result = subprocess.run(
@@ -161,7 +194,9 @@ def _launch_macos(app_name: str) -> bool:
         time.sleep(0.8)
         pyautogui.press("enter")
         time.sleep(1.5)
-        return True
+        # Truthy, but not True: whatever Spotlight ranked first was opened,
+        # which may not be the app that was asked for.
+        return "spotlight"
     except Exception as e:
         print(f"[open_app] Spotlight failed: {e}")
 
@@ -173,7 +208,20 @@ _LINUX_TERMINAL_FALLBACKS = [
     "xterm", "lxterminal", "mate-terminal", "tilix", "alacritty", "kitty",
 ]
 
-def _launch_linux(app_name: str) -> bool:
+def _launch_linux(app_name: str, file_path: str = "") -> bool:
+
+    if file_path:
+        binary = shutil.which(app_name) or shutil.which(app_name.lower())
+        try:
+            if binary:
+                subprocess.Popen([binary, file_path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.run(["xdg-open", file_path], capture_output=True, timeout=5)
+            time.sleep(1.0)
+            return True
+        except Exception as e:
+            print(f"[open_app] launch with file_path failed: {e}")
+        return False
 
     # terminal emulators: try common ones in order
     if app_name in ("x-terminal-emulator", "gnome-terminal", "terminal"):
@@ -237,13 +285,34 @@ _OS_LAUNCHERS = {
     "Linux":   _launch_linux,
 }
 
+def _safe_file_path(raw: str) -> str:
+    """Resolve and validate a file_path argument for open_app.
+
+    Reuses file_controller's home-directory sandbox rather than duplicating
+    it, so opening a file with an app is bound by the same safety rule as
+    every other file operation in this codebase — an app can't be pointed at
+    an arbitrary system path via a model-supplied string."""
+    if not raw:
+        return ""
+    try:
+        from actions.file_controller import _is_safe_path
+        target = Path(raw).expanduser()
+        if not _is_safe_path(target) or not target.exists():
+            return ""
+        return str(target)
+    except Exception:
+        return ""
+
+
 def open_app(
     parameters=None,
     response=None,
     player=None,
     session_memory=None,
 ) -> str:
-    app_name = (parameters or {}).get("app_name", "").strip()
+    params    = parameters or {}
+    app_name  = params.get("app_name", "").strip()
+    file_path = _safe_file_path(params.get("file_path", "").strip())
 
     if not app_name:
         return "No application name provided."
@@ -253,17 +322,26 @@ def open_app(
         return f"Unsupported operating system: {_SYSTEM}"
 
     normalized = _normalize(app_name)
-    print(f"[open_app] Launching: '{app_name}' → '{normalized}' ({_SYSTEM})")
+    print(f"[open_app] Launching: '{app_name}' → '{normalized}' ({_SYSTEM})"
+          + (f" with file '{file_path}'" if file_path else ""))
 
     if player:
         player.write_log(f"[open_app] {app_name}")
 
+    def _opened(how) -> str:
+        if how == "spotlight":
+            return (f"No app called {app_name} is installed, so I opened Spotlight's top "
+                    f"match for it — it may not be the right app.")
+        return f"Opened {app_name}" + (f" with {Path(file_path).name}." if file_path else ".")
+
     try:
-        if launcher(normalized):
-            return f"Opened {app_name}."
+        how = launcher(normalized, file_path)
+        if how:
+            return _opened(how)
         if normalized.lower() != app_name.lower():
-            if launcher(app_name):
-                return f"Opened {app_name}."
+            how = launcher(app_name, file_path)
+            if how:
+                return _opened(how)
         return (
             f"Could not confirm that {app_name} launched. "
             f"It may still be loading, or it might not be installed."
@@ -276,18 +354,20 @@ def open_app(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "open_app",
-    "description": "Opens any application on the computer. Use this whenever the user asks to open, launch, or start any app, website, or program. Always call this tool — never just say you opened it.",
+    "description": "Open, launch or start any application or program, optionally with a file. Always call it; never just say it is open.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "app_name": {
                 "type": "STRING",
-                "description": "Exact name of the application (e.g. 'WhatsApp', 'Chrome', 'Spotify')"
-            }
+                "description": "App name, e.g. Chrome, Spotify, Notepad",
+            },
+            "file_path": {
+                "type": "STRING",
+                "description": "Optional file to open with the app",
+            },
         },
-        "required": [
-            "app_name"
-        ]
+        "required": ["app_name"],
     },
     "handler": open_app,
 }

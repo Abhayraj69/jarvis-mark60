@@ -154,10 +154,30 @@ def _user_profile() -> dict:
         pass
     return {}
 
+def _type_into_focus(text: str, interval: float = 0.03) -> str:
+    """Types `text` into whatever has keyboard focus. pyautogui.typewrite()
+    only knows a fixed ASCII+control-key table and raises KeyError on
+    anything outside it — accented letters, curly quotes, em dashes, emoji —
+    which shows up constantly in natural, LLM-composed text. Route those
+    through the clipboard instead, which any target app already handles for
+    whatever Unicode it itself supports."""
+    if text.isascii():
+        pyautogui.typewrite(text, interval=interval)
+        return "typed"
+    if _PYPERCLIP:
+        pyperclip.copy(text)
+        time.sleep(0.1)
+        paste_key = "command" if _get_os() == "mac" else "ctrl"
+        pyautogui.hotkey(paste_key, "v")
+        return "pasted"
+    pyautogui.typewrite(text.encode("ascii", "ignore").decode("ascii"), interval=interval)
+    return "typed (ascii-only fallback, pyperclip unavailable)"
+
+
 def _type(text: str, interval: float = 0.03) -> str:
     _require_pyautogui()
     time.sleep(0.3)
-    pyautogui.typewrite(text, interval=interval)
+    _type_into_focus(text, interval=interval)
     return f"Typed: {text[:60]}{'…' if len(text) > 60 else ''}"
 
 
@@ -167,15 +187,9 @@ def _smart_type(text: str, clear_first: bool = True) -> str:
         _clear_field()
         time.sleep(0.1)
 
-    if len(text) > 20 and _PYPERCLIP:
-        pyperclip.copy(text)
-        time.sleep(0.1)
-        paste_key = "command" if _get_os() == "mac" else "ctrl"
-        pyautogui.hotkey(paste_key, "v")
-        return f"Smart-typed (clipboard): {text[:60]}{'…' if len(text) > 60 else ''}"
-
-    pyautogui.typewrite(text, interval=0.04)
-    return f"Smart-typed: {text[:60]}{'…' if len(text) > 60 else ''}"
+    mode = _type_into_focus(text, interval=0.04)
+    label = "clipboard" if mode == "pasted" else mode
+    return f"Smart-typed ({label}): {text[:60]}{'…' if len(text) > 60 else ''}"
 
 
 def _click(x=None, y=None, button: str = "left", clicks: int = 1) -> str:
@@ -414,6 +428,46 @@ def computer_control(
 
     print(f"[ComputerControl] ▶ {action}  {params}")
 
+    # Input guard (core/input_guard.py): keyboard input only goes straight to
+    # allow-listed apps, and sending in a messaging app needs a yes on screen.
+    try:
+        from core import input_guard, confirm
+        settings = input_guard.load_settings()
+        app, title = input_guard.frontmost() if settings.enabled else ("", "")
+        verdict = input_guard.decide(action, params, app, title, settings)
+    except Exception as e:
+        print(f"[ComputerControl] ⚠️ input guard unavailable: {e}")
+        verdict, app = "allow", ""
+
+    if verdict != "allow":
+        where = app or "the focused window"
+        if verdict == "confirm_send":
+            title_txt = f"Send in {where}?"
+        else:
+            title_txt = f"Let JARVIS type into {where}?"
+        detail = f"{action}: " + str(params.get("text") or params.get("key")
+                                     or params.get("keys") or params.get("description") or "")[:200]
+
+        def _later() -> str:
+            # Pressing CONFIRM on the HUD focuses the HUD; put the target back.
+            if app:
+                _focus_window(app)
+            return _perform(action, params, player)
+        return confirm.request(f"computer_control:{action}", title_txt, detail, _later)
+
+    if verdict == "allow" and action in _KEYBOARD_ACTIONS:
+        try:
+            from core import input_guard
+            input_guard.acting(player, f"Typing into {app}" if app else "Using the keyboard")
+        except Exception:
+            pass
+    return _perform(action, params, player)
+
+
+_KEYBOARD_ACTIONS = {"type", "smart_type", "paste", "press", "hotkey", "clear_field"}
+
+
+def _perform(action: str, params: dict, player=None) -> str:
     try:
 
         if action == "type":
@@ -516,74 +570,72 @@ def computer_control(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "computer_control",
-    "description": "Direct computer control: type, click, hotkeys, scroll, move mouse, screenshots, find elements on screen.",
+    "description": "Direct input: type, click, hotkeys, scroll, mouse, focus a window, find/click elements on screen. To type into a named app call focus_window first, then type.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data"
+                "description": "type | smart_type | click | double_click | right_click | hotkey | press | scroll | move | copy | paste | screenshot | wait | clear_field | focus_window | screen_find | screen_click | random_data | user_data",
             },
             "text": {
                 "type": "STRING",
-                "description": "Text to type or paste"
+                "description": "Text to type or paste",
             },
             "x": {
                 "type": "INTEGER",
-                "description": "X coordinate"
+                "description": "X coordinate",
             },
             "y": {
                 "type": "INTEGER",
-                "description": "Y coordinate"
+                "description": "Y coordinate",
             },
             "keys": {
                 "type": "STRING",
-                "description": "Key combination e.g. 'ctrl+c'"
+                "description": "Key combo, e.g. ctrl+c",
             },
             "key": {
                 "type": "STRING",
-                "description": "Single key e.g. 'enter'"
+                "description": "Single key, e.g. enter",
             },
             "direction": {
                 "type": "STRING",
-                "description": "up | down | left | right"
+                "description": "up | down | left | right",
             },
             "amount": {
                 "type": "INTEGER",
-                "description": "Scroll amount (default: 3)"
+                "description": "Scroll amount (default 3)",
             },
             "seconds": {
                 "type": "NUMBER",
-                "description": "Seconds to wait"
+                "description": "Seconds to wait",
             },
             "title": {
                 "type": "STRING",
-                "description": "Window title for focus_window"
+                "description": "Window title for focus_window",
             },
             "description": {
                 "type": "STRING",
-                "description": "Element description for screen_find/screen_click"
+                "description": "Element description for screen_find/screen_click",
             },
             "type": {
                 "type": "STRING",
-                "description": "Data type for random_data"
+                "description": "Data type for random_data",
             },
             "field": {
                 "type": "STRING",
-                "description": "Field for user_data: name|email|city"
+                "description": "user_data field: name | email | city",
             },
             "clear_first": {
                 "type": "BOOLEAN",
-                "description": "Clear field before typing (default: true)"
+                "description": "Clear field before typing (default true)",
             },
             "path": {
                 "type": "STRING",
-                "description": "Save path for screenshot"
-            }
+                "description": "Screenshot save path",
+            },
         },
-        "required": [
-            "action"
-        ]
+        "required": ["action"],
     },
     "handler": computer_control,
 }

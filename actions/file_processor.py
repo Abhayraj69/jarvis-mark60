@@ -47,6 +47,17 @@ def _gemini_client(tier: str = gemini.SMART):
     return _W()
 
 
+def _text_model():
+    # Routed through core/backend_router.py (ROUTING settings section) for
+    # every plain-text summarize/analyze call below — tries claude, then
+    # ollama, then gemini, with per-backend failover — instead of always
+    # paying for Gemini even when a cheaper/local backend would do.
+    from core.backend_router import TaskKind, get_text_model, load_policy_from_config
+    from memory.config_manager import get_plugin_config
+    policy = load_policy_from_config(get_plugin_config("routing"))
+    return get_text_model(TaskKind.SUMMARIZE, policy=policy)
+
+
 def _detect_type(path: Path) -> str:
     ext = path.suffix.lower().lstrip(".")
     image_exts = {"jpg", "jpeg", "png", "gif", "webp", "bmp", "tiff", "svg", "ico"}
@@ -215,7 +226,7 @@ def _process_pdf(path: Path, action: str, params: dict, speak=None) -> str:
             "reformat":       f"Reformat this text cleanly with proper structure:\n\n{text}",
         }
         try:
-            model    = _gemini_client()
+            model    = _text_model()
             response = model.generate_content(prompt_map.get(action, f"Analyze:\n\n{text}"))
             result   = response.text.strip()
             if len(result) > 600 and params.get("save", True):
@@ -305,7 +316,7 @@ def _process_text_doc(path: Path, file_type: str, action: str,
         instruction = action
 
     try:
-        model    = _gemini_client()
+        model    = _text_model()
         response = model.generate_content(prompt_map[action])
         result   = response.text.strip()
         if len(result) > 600 and params.get("save", True):
@@ -352,7 +363,7 @@ def _process_data(path: Path, file_type: str, action: str,
                    f"Rows: {len(df)}\nPreview:\n{preview}\n\n"
                    f"Give insights, patterns, and notable findings.")
         try:
-            model    = _gemini_client()
+            model    = _text_model()
             response = model.generate_content(prompt)
             return response.text.strip()
         except Exception as e:
@@ -406,7 +417,7 @@ def _process_data(path: Path, file_type: str, action: str,
 
     preview = df.head(30).to_string()
     try:
-        model    = _gemini_client()
+        model    = _text_model()
         response = model.generate_content(
             f"Task: {action}\nDataset ({len(df)} rows, cols: {list(df.columns)}):\n{preview}"
         )
@@ -437,7 +448,7 @@ def _process_json(path: Path, action: str, params: dict, speak=None) -> str:
         if params.get("instruction"):
             prompt = f"{params['instruction']}\n\nJSON data:\n{preview}"
         try:
-            model    = _gemini_client()
+            model    = _text_model()
             response = model.generate_content(prompt)
             return response.text.strip()
         except Exception as e:
@@ -501,7 +512,7 @@ def _process_code(path: Path, action: str, params: dict, speak=None) -> str:
         prompt = prompt_map[action]
 
     try:
-        model    = _gemini_client()
+        model    = _text_model()
         response = model.generate_content(prompt)
         result   = response.text.strip()
 
@@ -772,7 +783,7 @@ def _process_pptx(path: Path, action: str, params: dict, speak=None) -> str:
             out.write_text(text, encoding="utf-8")
             return f"Text extracted. Saved: {out.name}"
         try:
-            model    = _gemini_client()
+            model    = _text_model()
             prompt   = f"{'Summarize' if action == 'summarize' else 'Analyze'} this presentation:\n{text[:30000]}"
             response = model.generate_content(prompt)
             return response.text.strip()
@@ -805,7 +816,7 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
     if file_type == "unknown":
         try:
             content = path.read_text(encoding="utf-8", errors="ignore")[:10000]
-            model   = _gemini_client()
+            model   = _text_model()
             prompt  = f"File: {path.name}\nContent preview:\n{content}\n\nTask: {action or instruction or 'Describe what this file contains and what can be done with it.'}"
             response = model.generate_content(prompt)
             return response.text.strip()
@@ -844,80 +855,83 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "file_processor",
-    "description": "Processes any file that the user has uploaded or dropped onto the interface. Use this when the user refers to an uploaded file and wants an action on it. Supports: images (describe/ocr/resize/compress/convert), PDFs (summarize/extract_text/to_word), Word docs & text files (summarize/fix/reformat/translate), CSV/Excel (analyze/stats/filter/sort/convert), JSON/XML (validate/format/analyze), code files (explain/review/fix/optimize/run/document/test), audio (transcribe/trim/convert/info), video (trim/extract_audio/extract_frame/compress/transcribe/info), archives (list/extract), presentations (summarize/extract_text). ALWAYS call this tool when a file has been uploaded and the user gives a command about it. If the user's command is ambiguous, pick the most logical action for that file type.",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
+    "description": "Act on a file the user uploaded or dropped on the HUD: images, PDF, Word/text, CSV/Excel, JSON, code, audio, video, archives, slides. Pick the most logical action for the file type.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "file_path": {
                 "type": "STRING",
-                "description": "Full path to the uploaded file. Leave empty to use the currently uploaded file."
+                "description": "Path of the file; empty = current upload",
             },
             "action": {
                 "type": "STRING",
-                "description": "What to do with the file. Examples by type:\nimage: describe | ocr | resize | compress | convert | info\npdf: summarize | extract_text | to_word | info\ndocx/txt: summarize | fix | reformat | translate_hint | word_count | to_bullet\ncsv/excel: analyze | stats | filter | sort | convert | info\njson: validate | format | analyze | to_csv\ncode: explain | review | fix | optimize | run | document | test\naudio: transcribe | trim | convert | info\nvideo: trim | extract_audio | extract_frame | compress | transcribe | info | convert\narchive: list | extract\npptx: summarize | extract_text | analyze"
+                "description": "image: describe|ocr|resize|compress|convert|info; pdf: summarize|extract_text|to_word|info; docx/txt: summarize|fix|reformat|translate_hint|word_count|to_bullet; csv/xlsx: analyze|stats|filter|sort|convert|info; json: validate|format|analyze|to_csv; code: explain|review|fix|optimize|run|document|test; audio: transcribe|trim|convert|info; video: trim|extract_audio|extract_frame|compress|transcribe|info|convert; archive: list|extract; pptx: summarize|extract_text|analyze",
             },
             "instruction": {
                 "type": "STRING",
-                "description": "Free-form instruction if action doesn't cover it. E.g. 'translate this to Turkish', 'find all email addresses'"
+                "description": "Free-form request when no action fits",
             },
             "format": {
                 "type": "STRING",
-                "description": "Target format for conversion. E.g. 'mp3', 'pdf', 'csv', 'png'"
+                "description": "Target format for convert, e.g. mp3, pdf, png",
             },
             "width": {
                 "type": "INTEGER",
-                "description": "Target width for image resize"
+                "description": "Resize width",
             },
             "height": {
                 "type": "INTEGER",
-                "description": "Target height for image resize"
+                "description": "Resize height",
             },
             "scale": {
                 "type": "NUMBER",
-                "description": "Scale factor for image resize (e.g. 0.5)"
+                "description": "Resize scale factor, e.g. 0.5",
             },
             "quality": {
                 "type": "INTEGER",
-                "description": "Quality 1-100 for image/video compress"
+                "description": "Compress quality 1-100",
             },
             "start": {
                 "type": "STRING",
-                "description": "Start time for trim: seconds or HH:MM:SS"
+                "description": "Trim start: seconds or HH:MM:SS",
             },
             "end": {
                 "type": "STRING",
-                "description": "End time for trim: seconds or HH:MM:SS"
+                "description": "Trim end: seconds or HH:MM:SS",
             },
             "timestamp": {
                 "type": "STRING",
-                "description": "Timestamp for video frame extraction HH:MM:SS"
+                "description": "Frame time HH:MM:SS for extract_frame",
             },
             "column": {
                 "type": "STRING",
-                "description": "Column name for CSV filter/sort"
+                "description": "CSV column for filter/sort",
             },
             "value": {
                 "type": "STRING",
-                "description": "Filter value for CSV filter"
+                "description": "CSV filter value",
             },
             "condition": {
                 "type": "STRING",
-                "description": "Filter condition: equals|contains|gt|lt"
+                "description": "equals | contains | gt | lt (filter)",
             },
             "ascending": {
                 "type": "BOOLEAN",
-                "description": "Sort order for CSV sort (default: true)"
+                "description": "CSV sort order (default true)",
             },
             "save": {
                 "type": "BOOLEAN",
-                "description": "Save result to file (default: true)"
+                "description": "Save result to file (default true)",
             },
             "destination": {
                 "type": "STRING",
-                "description": "Output folder for archive extract"
-            }
+                "description": "Output folder for archive extract",
+            },
         },
-        "required": []
+        "required": [],
     },
     "handler": file_processor,
 }

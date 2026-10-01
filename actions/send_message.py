@@ -290,10 +290,35 @@ def send_message(
     if not _PYAUTOGUI:
         return "PyAutoGUI is not installed — cannot control the desktop."
 
+    # A message to someone else cannot be taken back, and a misheard sentence
+    # is enough to trigger this tool — so it waits for a yes on screen
+    # (core/input_guard.py, core/confirm.py). Switchable in INPUT GUARD.
+    try:
+        from core import input_guard, confirm
+        needs_yes = input_guard.load_settings().confirm_messages
+    except Exception as e:
+        print(f"[SendMessage] ⚠️ input guard unavailable: {e}")
+        needs_yes = False
+    if needs_yes:
+        return confirm.request(
+            "send_message",
+            f"Send to {receiver} on {platform.title()}?",
+            message_text[:300],
+            lambda: _deliver(platform, receiver, message_text, player),
+        )
+    return _deliver(platform, receiver, message_text, player)
+
+
+def _deliver(platform: str, receiver: str, message_text: str, player=None) -> str:
     preview = message_text[:50] + ("…" if len(message_text) > 50 else "")
     print(f"[SendMessage] 📨 {platform} → {receiver}: {preview}")
     if player:
         player.write_log(f"[msg] {platform} → {receiver}")
+    try:
+        from core import input_guard
+        input_guard.acting(player, f"Sending a {platform.title()} message to {receiver}")
+    except Exception:
+        pass
 
     try:
         handler = _resolve_platform(platform)
@@ -316,33 +341,26 @@ def send_message(
 TOOL = {
     "name": "send_message",
     "description": (
-        "Sends a text message via WhatsApp, Telegram, or another messaging "
-        "platform. Write 'message_text' in the USER'S OWN LANGUAGE, exactly "
-        "what they asked to be said. If the result says the message was NOT "
-        "sent, repeat that plainly along with the reason it gives — never "
-        "tell the user a message was sent unless the result said it was."
+        "Send a text via WhatsApp, Telegram etc. Write message_text in the user's "
+        "language. If the result says NOT sent, tell the user and why."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "receiver": {
                 "type": "STRING",
-                "description": "Recipient contact name"
+                "description": "Contact name",
             },
             "message_text": {
                 "type": "STRING",
-                "description": "The message to send"
+                "description": "Message to send",
             },
             "platform": {
                 "type": "STRING",
-                "description": "Platform: WhatsApp, Telegram, etc."
-            }
+                "description": "WhatsApp, Telegram, etc.",
+            },
         },
-        "required": [
-            "receiver",
-            "message_text",
-            "platform"
-        ]
+        "required": ["receiver", "message_text", "platform"],
     },
     "handler": send_message,
 }
