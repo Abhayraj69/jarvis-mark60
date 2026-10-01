@@ -316,33 +316,26 @@ def send_message(
 TOOL = {
     "name": "send_message",
     "description": (
-        "Sends a text message via WhatsApp, Telegram, or another messaging "
-        "platform. Write 'message_text' in the USER'S OWN LANGUAGE, exactly "
-        "what they asked to be said. If the result says the message was NOT "
-        "sent, repeat that plainly along with the reason it gives — never "
-        "tell the user a message was sent unless the result said it was."
+        "Send a text via WhatsApp, Telegram etc. Write message_text in the user's "
+        "language. If the result says NOT sent, tell the user and why."
     ),
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "receiver": {
                 "type": "STRING",
-                "description": "Recipient contact name"
+                "description": "Contact name",
             },
             "message_text": {
                 "type": "STRING",
-                "description": "The message to send"
+                "description": "Message to send",
             },
             "platform": {
                 "type": "STRING",
-                "description": "Platform: WhatsApp, Telegram, etc."
-            }
+                "description": "WhatsApp, Telegram, etc.",
+            },
         },
-        "required": [
-            "receiver",
-            "message_text",
-            "platform"
-        ]
+        "required": ["receiver", "message_text", "platform"],
     },
     "handler": send_message,
 }

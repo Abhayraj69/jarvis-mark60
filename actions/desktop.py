@@ -485,34 +485,32 @@ def desktop_control(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "desktop_control",
-    "description": "Controls the desktop: wallpaper, organize, clean, list, stats.",
+    "description": "Desktop: set wallpaper, organize or clean icons, list, stats, or a natural-language desktop task.",
     "parameters": {
         "type": "OBJECT",
         "properties": {
             "action": {
                 "type": "STRING",
-                "description": "wallpaper | wallpaper_url | organize | clean | list | stats | task"
+                "description": "wallpaper | wallpaper_url | organize | clean | list | stats | task",
             },
             "path": {
                 "type": "STRING",
-                "description": "Image path for wallpaper"
+                "description": "Image path for wallpaper",
             },
             "url": {
                 "type": "STRING",
-                "description": "Image URL for wallpaper_url"
+                "description": "Image URL for wallpaper_url",
             },
             "mode": {
                 "type": "STRING",
-                "description": "by_type or by_date for organize"
+                "description": "by_type | by_date (organize)",
             },
             "task": {
                 "type": "STRING",
-                "description": "Natural language desktop task"
-            }
+                "description": "Natural-language desktop task",
+            },
         },
-        "required": [
-            "action"
-        ]
+        "required": ["action"],
     },
     "handler": desktop_control,
 }

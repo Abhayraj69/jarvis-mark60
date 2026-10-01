@@ -70,6 +70,62 @@ _IMG_MAX_H = 720
 _JPEG_Q    = 82
 
 
+def _get_api_key() -> str:
+    return _load_config().get("gemini_api_key", "")
+
+
+def _routing_policy():
+    """The user's saved ROUTING settings (core/backend_router.py), so the
+    one-shot helpers below honour the same per-task preferences as
+    code_helper / dev_agent / file_processor."""
+    from core.backend_router import load_policy_from_config
+    try:
+        from memory.config_manager import get_plugin_config
+        return load_policy_from_config(get_plugin_config("routing"))
+    except Exception:
+        return None
+
+
+def _vision_query(image_bytes: bytes, mime_type: str, prompt: str,
+                  kind=None, policy=None) -> str:
+    """One-shot vision call: image + text prompt in, text out.
+
+    Shared by any action that needs a single structured read of an image
+    (study notes, screen_find, etc.) instead of the live multimodal session.
+    Routed through core/backend_router.py as TaskKind.VISION — Gemini Flash
+    by default, with Flash-Lite as the fallback. Callers that run on a
+    timer (study_mode's background loop) pass a policy that puts
+    "gemini_lite" first to keep the per-tick cost down; one-shot, user-facing
+    reads (study_notes, study_quiz's fresh capture) get the stronger model,
+    which is where the quality of the notes is actually decided.
+    """
+    from core.backend_router import TaskKind, complete
+    result = complete(
+        kind or TaskKind.VISION,
+        [{"role": "user", "content": prompt}],
+        images=[(image_bytes, mime_type)],
+        policy=policy or _routing_policy(),
+    )
+    return (result.get("content") or "").strip()
+
+
+def _text_query(prompt: str, kind=None, policy=None) -> str:
+    """One-shot text call: prompt in, text out — no image.
+
+    For actions that need a single structured text transform (e.g. turning
+    saved notes into quiz questions). Routed as TaskKind.CHAT by default so
+    it lands on the strongest configured text backend (Gemini Flash / Claude)
+    rather than the Flash-Lite model it used to hardcode.
+    """
+    from core.backend_router import TaskKind, complete
+    result = complete(
+        kind or TaskKind.CHAT,
+        [{"role": "user", "content": prompt}],
+        policy=policy or _routing_policy(),
+    )
+    return (result.get("content") or "").strip()
+
+
 def _compress(img_bytes: bytes, source_format: str = "PNG") -> tuple[bytes, str]:
     if not _PIL:
         return img_bytes, f"image/{source_format.lower()}"
