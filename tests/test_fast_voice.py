@@ -4,9 +4,11 @@ second time."""
 import unittest
 from unittest.mock import patch
 
+import live.constants
 import main
 from core import fast_intent
 from tests.live_harness import (
+    patch_everywhere,
     heard, make_jarvis, pause, play, said, tool_call, turn_complete,
 )
 
@@ -16,8 +18,8 @@ SETTLE = 0.05
 class FastVoiceTest(unittest.TestCase):
     def setUp(self):
         patches = [
-            patch.object(main, "FAST_VOICE_SETTLE_SECONDS", SETTLE),
-            patch.object(main, "get_plugin_config", return_value={}),
+            patch_everywhere("FAST_VOICE_SETTLE_SECONDS", SETTLE),
+            patch_everywhere("get_plugin_config", return_value={}),
         ]
         for p in patches:
             p.start()
@@ -70,14 +72,14 @@ class FastVoiceTest(unittest.TestCase):
 
     def test_switched_off(self):
         j = make_jarvis()
-        with patch.object(main, "get_plugin_config", return_value={"voice": False}):
+        with patch_everywhere("get_plugin_config", return_value={"voice": False}):
             play(j, [heard("volume up"), pause(SETTLE * 3)])
         self.assertEqual(j.dispatched, [])
 
     def test_stale_command_does_not_swallow_a_later_request(self):
         j = make_jarvis()
         play(j, [heard("volume up"), pause(SETTLE * 3), turn_complete()])
-        j._fast_voice_done = (j._fast_voice_done[0], j._fast_voice_done[1] - main.FAST_VOICE_DEDUPE_SECONDS - 1)
+        j._fast_voice_done = (j._fast_voice_done[0], j._fast_voice_done[1] - live.constants.FAST_VOICE_DEDUPE_SECONDS - 1)
         play(j, [tool_call("computer_settings", {"action": "volume_up"})])
         self.assertEqual(len(j.dispatched), 2)
 

@@ -5,8 +5,9 @@ import unittest
 from datetime import datetime
 from unittest.mock import patch
 
+import live.constants
 import main
-from tests.live_harness import heard, make_jarvis, play, tool_call
+from tests.live_harness import heard, make_jarvis, play, tool_call, patch_everywhere
 
 
 class TimeTest(unittest.TestCase):
@@ -59,9 +60,9 @@ class SleepCheckTest(unittest.TestCase):
 
     def test_misspelled_sleep_jarvis(self):
         for text in ("Sleep Javas.", "Jarvas, go to sleep"):
-            self.assertTrue(main._FAREWELL_RE.search(text), text)
+            self.assertTrue(live.constants._FAREWELL_RE.search(text), text)
         for text in ("Hey Jarvis.", "I can't sleep", "sleep apnea just"):
-            self.assertFalse(main._FAREWELL_RE.search(text), text)
+            self.assertFalse(live.constants._FAREWELL_RE.search(text), text)
 
     def test_end_session_is_a_goodbye(self):
         j = self._jarvis("End session.")
@@ -73,7 +74,7 @@ class SleepCheckTest(unittest.TestCase):
         j = make_jarvis()
         for _ in range(400):                      # ~25 s of 1024-sample blocks
             j._remember_mic(np.ones(1024, dtype=np.int16))
-        self.assertLessEqual(j._recent_mic_len, main.SLEEP_CHECK_SECONDS * main.SEND_SAMPLE_RATE + 1024)
+        self.assertLessEqual(j._recent_mic_len, live.constants.SLEEP_CHECK_SECONDS * live.constants.SEND_SAMPLE_RATE + 1024)
 
 
 class SearchFailureTest(unittest.TestCase):
@@ -218,21 +219,21 @@ class ClockNoteTest(unittest.TestCase):
 
 class FollowUpWindowTest(unittest.TestCase):
     def setUp(self):
-        p = patch.object(main, "get_plugin_config", return_value={})
+        p = patch_everywhere("get_plugin_config", return_value={})
         p.start()
         self.addCleanup(p.stop)
 
     def test_sleeps_after_follow_up_window(self):
         from tests.live_harness import elapse, tick_sleep_watch
         j = make_jarvis()
-        elapse(main.FOLLOW_UP_SECONDS + 1)(j)
+        elapse(live.constants.FOLLOW_UP_SECONDS + 1)(j)
         tick_sleep_watch(j)
         self.assertFalse(j._awake)
 
     def test_still_awake_inside_the_window(self):
         from tests.live_harness import elapse, tick_sleep_watch
         j = make_jarvis()
-        elapse(main.FOLLOW_UP_SECONDS - 10)(j)
+        elapse(live.constants.FOLLOW_UP_SECONDS - 10)(j)
         tick_sleep_watch(j)
         self.assertTrue(j._awake)
 
@@ -242,8 +243,8 @@ class LocalGoodbyeTest(unittest.TestCase):
     shutdown_jarvis. Goodbyes are now handled locally."""
 
     def setUp(self):
-        for p in (patch.object(main, "FAST_VOICE_SETTLE_SECONDS", 0.05),
-                  patch.object(main, "get_plugin_config", return_value={})):
+        for p in (patch_everywhere("FAST_VOICE_SETTLE_SECONDS", 0.05),
+                  patch_everywhere("get_plugin_config", return_value={})):
             p.start()
             self.addCleanup(p.stop)
 

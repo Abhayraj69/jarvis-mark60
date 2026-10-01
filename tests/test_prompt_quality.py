@@ -88,11 +88,12 @@ class IdentityBlockTests(unittest.TestCase):
     def test_identity_block(self):
         from unittest.mock import patch
         import main
+        from tests.live_harness import patch_everywhere
         j = object.__new__(main.JarvisLive)
         cfg = {"assistant_name": "JARVIS", "user_name": ""}
-        with patch.object(main, "_load_api_config", return_value=cfg), \
-             patch.object(main, "load_memory", return_value={}), \
-             patch.object(main, "format_memory_for_prompt", return_value=""):
+        with patch_everywhere("_load_api_config", return_value=cfg), \
+             patch_everywhere("load_memory", return_value={}), \
+             patch_everywhere("format_memory_for_prompt", return_value=""):
             text = j._assemble_system_prompt()
         self.assertIn("You are JARVIS.", text)
         self.assertIn("at most once per reply", text)
@@ -102,11 +103,12 @@ class IdentityBlockTests(unittest.TestCase):
     def test_identity_block_with_user_name(self):
         from unittest.mock import patch
         import main
+        from tests.live_harness import patch_everywhere
         j = object.__new__(main.JarvisLive)
         cfg = {"assistant_name": "FRIDAY", "user_name": "Raj"}
-        with patch.object(main, "_load_api_config", return_value=cfg), \
-             patch.object(main, "load_memory", return_value={}), \
-             patch.object(main, "format_memory_for_prompt", return_value=""):
+        with patch_everywhere("_load_api_config", return_value=cfg), \
+             patch_everywhere("load_memory", return_value={}), \
+             patch_everywhere("format_memory_for_prompt", return_value=""):
             text = j._assemble_system_prompt()
         self.assertIn("You are FRIDAY.", text)
         self.assertIn("Call the user 'Raj'", text)

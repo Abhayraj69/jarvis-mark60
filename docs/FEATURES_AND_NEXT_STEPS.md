@@ -108,7 +108,7 @@ Everything new can be switched off in Plugin Settings.
 
 | # | Improvement | Why it matters | Builds on |
 |---|---|---|---|
-| 1 | **Split `main.py`** (~4,850 lines) and `ui.py` (~6,200 lines) | Most bugs in live testing came from features interfering: sleep vs reconnects, interrupts vs playback. Smaller modules with the existing tests make changes safe. | live harness tests, roadmap 6.1–6.2 |
+| 1 | **Split `ui.py`** (~6,200 lines) | `main.py` is done: it is now ~760 lines, with the Live session split by concern into `live/`. Most bugs in live testing came from features interfering, and the HUD is the other half of that. | live harness tests, roadmap 6.1–6.2 |
 | 2 | **Offline mode** | Install Ollama and a small model so the automatic fallback has somewhere to go when Gemini is down or out of quota. | `core/fallback.py`, Local Mode |
 | 3 | **Smart home** | Lights and plugs by voice. Depends on which devices are in use (Tuya/Smart Life, Home Assistant, HomeKit). | plugin system |
 | 4 | **Study Mode 2.0** | Real flashcard decks with spaced repetition, grading in code instead of by the voice model, study plans. | study_* actions, roadmap phase 4 |

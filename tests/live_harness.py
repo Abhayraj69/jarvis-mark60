@@ -21,11 +21,47 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import sys
 import time
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import DEFAULT, MagicMock, patch
 
 import main
+
+
+# ── Patching a name JarvisLive uses ──────────────────────────────────────────
+
+class patch_everywhere:
+    """patch.object(main, name, ...) for the split-up JarvisLive: replaces
+    `name` in main and in every live.* module that imported it, with one shared
+    object, so a test's stand-in is seen whichever mixin reads it. Use like
+    patch.object: as a context manager, or with start()/stop(). Raises if no
+    module has `name`, so a rename can't turn a patch into a silent no-op."""
+
+    def __init__(self, name: str, new=DEFAULT, **mock_kwargs):
+        self.name = name
+        self.new = MagicMock(**mock_kwargs) if new is DEFAULT else new
+        mods = [m for k, m in sorted(sys.modules.items())
+                if (k == "main" or k.startswith("live.")) and hasattr(m, name)]
+        if not mods:
+            raise AttributeError(f"nothing in main or live.* has {name!r}")
+        self._patches = [patch.object(m, name, self.new) for m in mods]
+
+    def start(self):
+        for p in self._patches:
+            p.start()
+        return self.new
+
+    def stop(self):
+        for p in reversed(self._patches):
+            p.stop()
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *exc):
+        self.stop()
+        return False
 
 
 # ── Server messages ──────────────────────────────────────────────────────────
@@ -185,11 +221,11 @@ def make_jarvis(*, wake_word: bool = True, awake: bool = True, tools: dict | Non
     registry.discover.return_value = registry
     registry.get_tool_declarations.return_value = []
 
-    with patch.object(main, "get_wake_word_enabled", return_value=wake_word), \
-         patch.object(main, "get_push_to_talk_enabled", return_value=False), \
-         patch.object(main, "get_plugin_config", return_value={}), \
-         patch.object(main, "is_local_engine_enabled", return_value=False), \
-         patch.object(main, "ToolRegistry", return_value=registry):
+    with patch_everywhere("get_wake_word_enabled", return_value=wake_word), \
+         patch_everywhere("get_push_to_talk_enabled", return_value=False), \
+         patch_everywhere("get_plugin_config", return_value={}), \
+         patch_everywhere("is_local_engine_enabled", return_value=False), \
+         patch_everywhere("ToolRegistry", return_value=registry):
         j = main.JarvisLive(FakeUI())
 
     j._awake = awake
@@ -223,9 +259,9 @@ def _start_stubs():
     global _STUBS
     if _STUBS is None:
         _STUBS = [
-            patch.object(main, "telemetry", MagicMock()),
-            patch.object(main, "context_manager", MagicMock()),
-            patch.object(main, "WakeWordDetector", FakeWakeDetector),
+            patch_everywhere("telemetry", MagicMock()),
+            patch_everywhere("context_manager", MagicMock()),
+            patch_everywhere("WakeWordDetector", FakeWakeDetector),
         ]
         for p in _STUBS:
             p.start()
