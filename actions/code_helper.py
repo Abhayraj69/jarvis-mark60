@@ -589,6 +589,9 @@ def code_helper(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "code_helper",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
     "description": "Write, edit, explain, run or build a single code file.",
     "parameters": {
         "type": "OBJECT",

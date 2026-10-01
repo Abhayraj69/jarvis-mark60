@@ -600,6 +600,9 @@ def dev_agent(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "dev_agent",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
     "description": "Build a complete multi-file project: plan, write files, install deps, open VS Code, run and fix errors. For single files use code_helper.",
     "parameters": {
         "type": "OBJECT",

@@ -4,11 +4,14 @@ Text-to-Speech engines for MARK XL.
 EdgeTTS     – free Microsoft TTS (internet required, no API key)
 Kokoro      – fully offline neural TTS (~330 MB model)
 ElevenLabs  – cloud API (API key required, best quality)
+MacSay      – macOS's built-in `say` (offline, nothing to install; the
+              fallback voice when the configured engine is not installed)
 """
 from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import queue as _queue
 import threading
 from typing import Callable, Optional
@@ -398,6 +401,34 @@ class ElevenLabsTTSEngine:
 # Thread-safe player wrapper
 # ---------------------------------------------------------------------------
 
+class MacSayEngine:
+    """macOS `say` — offline and always present on a Mac. Robotic next to
+    the others, but it means Local Mode can always speak."""
+
+    def __init__(self, voice: str = ""):
+        self.voice = voice
+        self._proc = None
+
+    def speak(self, text: str, profile: Optional[SpeechProfile] = None) -> None:
+        import subprocess
+        p = profile or _NEUTRAL_PROFILE
+        rate = int(185 * (1 + p.rate_percent / 100.0) * (p.speed_multiplier or 1.0))
+        cmd = ["say", "-r", str(max(90, min(rate, 320)))]
+        if self.voice:
+            cmd += ["-v", self.voice]
+        self._proc = subprocess.Popen(cmd + [text])
+        self._proc.wait()
+        self._proc = None
+
+    def stop(self) -> None:
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+
 class TTSPlayer:
     """
     Wraps any *Engine. Exposes a blocking speak() method
@@ -442,6 +473,9 @@ class TTSPlayer:
 
     def stop(self) -> None:
         sd.stop()
+        engine_stop = getattr(self._engine, "stop", None)
+        if callable(engine_stop):
+            engine_stop()
         with self._lock:
             self._playing = False
 
@@ -450,8 +484,23 @@ class TTSPlayer:
 # Factory
 # ---------------------------------------------------------------------------
 
+def _installed(module: str) -> bool:
+    import importlib.util
+    try:
+        return importlib.util.find_spec(module) is not None
+    except Exception:
+        return False
+
+
 def create_tts_player(config: dict) -> TTSPlayer:
     engine_name = config.get("tts_engine", "edgetts").lower()
+    # The configured engine is not installed: speak with macOS `say` rather
+    # than not at all.
+    needs = {"kokoro": "kokoro", "elevenlabs": "requests"}.get(engine_name, "edge_tts")
+    if engine_name == "say" or (not _installed(needs) and sys.platform == "darwin"):
+        if engine_name != "say":
+            print(f"[TTS] {engine_name} is not installed — using macOS 'say'.")
+        return TTSPlayer(MacSayEngine(voice=config.get("say_voice", "")))
     if engine_name == "kokoro":
         voice  = config.get("tts_voice", "af_heart")
         speed  = float(config.get("tts_speed", 1.0))

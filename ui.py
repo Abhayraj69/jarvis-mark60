@@ -908,6 +908,10 @@ class HudCanvas(QWidget):
         elif self.state == "LISTENING":
             sym = "●" if self._blink else "○"
             txt, col = f"{sym}  LISTENING",  qcol(C.GREEN)
+        elif self.state == "ACTING":
+            # Driving the keyboard in another app (core/input_guard.py).
+            sym = "⌨" if self._blink else "▣"
+            txt, col = f"{sym}  ACTING FOR YOU", qcol(C.RED)
         else:
             sym = "●" if self._blink else "○"
             txt, col = f"{sym}  {self.state}", qcol(C.PRI)

@@ -290,10 +290,35 @@ def send_message(
     if not _PYAUTOGUI:
         return "PyAutoGUI is not installed — cannot control the desktop."
 
+    # A message to someone else cannot be taken back, and a misheard sentence
+    # is enough to trigger this tool — so it waits for a yes on screen
+    # (core/input_guard.py, core/confirm.py). Switchable in INPUT GUARD.
+    try:
+        from core import input_guard, confirm
+        needs_yes = input_guard.load_settings().confirm_messages
+    except Exception as e:
+        print(f"[SendMessage] ⚠️ input guard unavailable: {e}")
+        needs_yes = False
+    if needs_yes:
+        return confirm.request(
+            "send_message",
+            f"Send to {receiver} on {platform.title()}?",
+            message_text[:300],
+            lambda: _deliver(platform, receiver, message_text, player),
+        )
+    return _deliver(platform, receiver, message_text, player)
+
+
+def _deliver(platform: str, receiver: str, message_text: str, player=None) -> str:
     preview = message_text[:50] + ("…" if len(message_text) > 50 else "")
     print(f"[SendMessage] 📨 {platform} → {receiver}: {preview}")
     if player:
         player.write_log(f"[msg] {platform} → {receiver}")
+    try:
+        from core import input_guard
+        input_guard.acting(player, f"Sending a {platform.title()} message to {receiver}")
+    except Exception:
+        pass
 
     try:
         handler = _resolve_platform(platform)

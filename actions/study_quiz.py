@@ -105,6 +105,9 @@ def study_quiz(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ─────────────
 TOOL = {
     "name": "study_quiz",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
     "description": "Generate quiz questions WITH answers from the last study notes (or a fresh screen capture). Returns the whole set for you to ask one at a time.",
     "parameters": {
         "type": "OBJECT",

@@ -90,6 +90,11 @@ class PluginRegistry:
         rec = self._plugins.get(name)
         return rec.scheduling if rec else None
 
+    def runs_in_background(self, name: str) -> bool:
+        """True if this tool declared behavior NON_BLOCKING."""
+        rec = self._plugins.get(name)
+        return bool(rec and rec.behavior == "NON_BLOCKING")
+
     # -- called by main.py from _execute_tool's else branch --
     def run(self, name: str, parameters: dict, player=None, session_memory=None) -> str:
         rec = self._plugins.get(name)

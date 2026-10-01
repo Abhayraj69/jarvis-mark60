@@ -1062,6 +1062,9 @@ if __name__ == "__main__":
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "game_updater",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
     "description": "The only tool for Steam/Epic: install, update, list games, download status, schedule updates. Never use the browser or web search for these.",
     "parameters": {
         "type": "OBJECT",

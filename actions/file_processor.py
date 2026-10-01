@@ -855,6 +855,9 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "file_processor",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
     "description": "Act on a file the user uploaded or dropped on the HUD: images, PDF, Word/text, CSV/Excel, JSON, code, audio, video, archives, slides. Pick the most logical action for the file type.",
     "parameters": {
         "type": "OBJECT",

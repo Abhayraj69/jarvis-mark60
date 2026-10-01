@@ -384,6 +384,9 @@ def web_search(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ──────────────
 TOOL = {
     "name": "web_search",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
     "description": "Web search for anything current or factual you are not sure of. Modes: search, news (headlines), research (deep answer), price (product cost), compare (side by side).",
     "parameters": {
         "type": "OBJECT",

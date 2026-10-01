@@ -428,6 +428,46 @@ def computer_control(
 
     print(f"[ComputerControl] ▶ {action}  {params}")
 
+    # Input guard (core/input_guard.py): keyboard input only goes straight to
+    # allow-listed apps, and sending in a messaging app needs a yes on screen.
+    try:
+        from core import input_guard, confirm
+        settings = input_guard.load_settings()
+        app, title = input_guard.frontmost() if settings.enabled else ("", "")
+        verdict = input_guard.decide(action, params, app, title, settings)
+    except Exception as e:
+        print(f"[ComputerControl] ⚠️ input guard unavailable: {e}")
+        verdict, app = "allow", ""
+
+    if verdict != "allow":
+        where = app or "the focused window"
+        if verdict == "confirm_send":
+            title_txt = f"Send in {where}?"
+        else:
+            title_txt = f"Let JARVIS type into {where}?"
+        detail = f"{action}: " + str(params.get("text") or params.get("key")
+                                     or params.get("keys") or params.get("description") or "")[:200]
+
+        def _later() -> str:
+            # Pressing CONFIRM on the HUD focuses the HUD; put the target back.
+            if app:
+                _focus_window(app)
+            return _perform(action, params, player)
+        return confirm.request(f"computer_control:{action}", title_txt, detail, _later)
+
+    if verdict == "allow" and action in _KEYBOARD_ACTIONS:
+        try:
+            from core import input_guard
+            input_guard.acting(player, f"Typing into {app}" if app else "Using the keyboard")
+        except Exception:
+            pass
+    return _perform(action, params, player)
+
+
+_KEYBOARD_ACTIONS = {"type", "smart_type", "paste", "press", "hotkey", "clear_field"}
+
+
+def _perform(action: str, params: dict, player=None) -> str:
     try:
 
         if action == "type":

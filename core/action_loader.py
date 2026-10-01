@@ -101,6 +101,11 @@ class ActionRegistry:
         rec = self._actions.get(name)
         return rec.scheduling if rec else None
 
+    def runs_in_background(self, name: str) -> bool:
+        """True if this tool declared behavior NON_BLOCKING."""
+        rec = self._actions.get(name)
+        return bool(rec and rec.behavior == "NON_BLOCKING")
+
     def names(self) -> set[str]:
         return set(self._actions.keys())
 

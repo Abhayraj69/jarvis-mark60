@@ -282,6 +282,11 @@ def live_model() -> str:
     return LIVE_MODELS[0]
 
 
+def all_live_models_resting() -> bool:
+    """True while every Live model is cooling off (quota, gone, or 1011s)."""
+    return all(_cooling(m) for m in LIVE_MODELS)
+
+
 def note_live_failure(model: str, err: str) -> bool:
     """Record why a Live model failed. True when it is worth trying the next.
 

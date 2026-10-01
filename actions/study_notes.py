@@ -118,6 +118,9 @@ def study_notes(
 # ── Tool declaration (auto-discovered by core/action_loader.py) ─────────────
 TOOL = {
     "name": "study_notes",
+    # Slow (web / LLM / bulk work): runs in the background so JARVIS keeps
+    # listening; the result comes back when there is a gap in the talk.
+    "behavior": "NON_BLOCKING",
     "description": "Capture the screen once, extract structured study notes from the material on it, and save them to a file. Needs no prior screen_process call.",
     "parameters": {
         "type": "OBJECT",

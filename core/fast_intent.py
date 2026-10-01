@@ -254,3 +254,36 @@ def detect(text: str) -> Intent | None:
             return Intent("open_app", {"app_name": name}, f"Opening {name}.")
 
     return None
+
+
+# ── Voice ─────────────────────────────────────────────────────────────────────
+# The same patterns run on Gemini's live transcript of what the user said
+# (see JarvisLive._schedule_fast_voice). Speech can be misheard and a
+# transcript can be cut off mid-sentence, so a few matches stay model-only by
+# voice: ones that lose work or act on whatever happens to be focused.
+_VOICE_UNSAFE_ACTIONS = {
+    "close_window", "close_tab", "select_all", "cut", "paste", "copy",
+    "press_key", "lock_screen", "sleep_display", "switch_window",
+}
+
+
+def voice_safe(intent: Intent) -> bool:
+    if intent.tool == "computer_control":
+        return True                     # media keys only
+    if intent.tool == "desktop_control":
+        return False                    # moves files; let the model confirm
+    return intent.args.get("action") not in _VOICE_UNSAFE_ACTIONS
+
+
+def same_call(intent: Intent, tool: str, args: dict) -> bool:
+    """Is the model's tool call the one this intent already ran? Values are
+    compared loosely ("chrome" vs "Google Chrome") — the point is to not run
+    a toggle twice, not to audit the model's spelling."""
+    if tool != intent.tool:
+        return False
+    for key, want in intent.args.items():
+        got = str((args or {}).get(key, "")).strip().lower()
+        want = str(want).strip().lower()
+        if not got or not (got == want or want in got or got in want):
+            return False
+    return True
