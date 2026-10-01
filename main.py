@@ -168,10 +168,14 @@ SHUTDOWN_USER_WINDOW_SECONDS = 10.0
 # English and Hindi/Hinglish; the HUD's sleep button covers anything else.
 _FAREWELL_RE = re.compile(
     r"\b(bye|goodbye|good ?night|see you|that'?s all|go to sleep|sleep now|"
-    r"stop listening|shut ?down|alvida|so ja(o)?|chalo bye)\b"
+    r"stop listening|shut ?down|end (?:the |this )?session|alvida|so ja(o)?|chalo bye)\b"
     r"|अलविदा|बाय|शुभ रात्रि|सो जाओ",
     re.IGNORECASE,
 )
+# "Hey Jarvis" said while already awake reaches the model as "Bye, Jarvis"
+# often enough to put it to sleep. The wake detector also listens while awake;
+# a sleep request this soon after it heard "Hey Jarvis" is that mishearing.
+WAKE_NOT_BYE_SECONDS = 5.0
 # Laptop speakers keep playing for a moment after the last chunk is handed to
 # PortAudio. Re-opening the mic the instant playback "ends" streams JARVIS's
 # own trailing words back to Gemini, which reads them as the user talking —
@@ -461,6 +465,14 @@ TOOL_DECLARATIONS = [
         "parameters": {"type": "OBJECT", "properties": {}},
     },
     {
+        # The time in the system prompt is frozen at connect, and a resumed
+        # session can run for hours — it said "12:18" at 12:20.
+        "name": "get_time",
+        "description": "The current local time and date. Only needed when no [CLOCK] note "
+                       "has arrived yet; otherwise answer from the latest [CLOCK].",
+        "parameters": {"type": "OBJECT", "properties": {}},
+    },
+    {
         "name": "screen_process",
         "description": (
             "Capture the screen or webcam so you can see it — you have no vision "
@@ -662,6 +674,8 @@ def _classify_live_error(err: str, top: str, *, resumed_with: bool, uptime: floa
     if any(k in err for k in (
         "TimeoutError", "timed out", "getaddrinfo", "CancelledError",
         "ConnectionRefusedError", "OSError", "Cannot connect",
+        # 1006: the socket died without a goodbye — Wi-Fi dropped, or the Mac slept.
+        "1006", "abnormal closure", "no close frame",
     )):
         return "network"
     return "other"
@@ -682,6 +696,7 @@ class JarvisLive:
         self._tools_running       = 0       # tool calls in flight (sleep watch waits for them)
         self._go_away_pending     = False   # a GoAway-triggered reconnect is scheduled
         self._last_realtime_send  = 0.0     # monotonic time audio last went to the session
+        self._audio_dropped       = 0       # mic chunks dropped in the current backlog
         self._session_started_at  = 0.0     # monotonic time the current session connected
         self._last_activity       = time.monotonic()  # drives auto-sleep (see _touch_activity)
         self._last_user_text      = ""      # latest thing the user said/typed, for sleep logs
@@ -877,6 +892,12 @@ class JarvisLive:
         self._voice_not_ready_logged = False
         self._voice_rejected_logged_at = 0.0
         self._voice_enrolling = False   # mic goes nowhere while recording a profile
+        self._wake_heard_at = -1e9      # last "Hey Jarvis" heard while already awake
+        # Per-reply audio health: [first arrival, last arrival, bytes] and how
+        # often the speaker ran dry — tells a slow network apart from a busy CPU.
+        self._reply_audio = None
+        self._underruns = 0
+        self._clock_sent = ""          # minute ("HH:MM") of the last [CLOCK] note
         # Spoken fast commands: a sequence number that cancels a pending match
         # when more speech (or a model tool call) arrives, and the last one run.
         self._fast_voice_seq = 0
@@ -912,6 +933,11 @@ class JarvisLive:
 
     def _on_wake_detected(self) -> None:
         """Called from the detector thread when 'Hey Jarvis' is heard."""
+        if self._awake:
+            # Already awake: nothing to wake, but remember it — the model may
+            # be about to hear the same words as "bye Jarvis" (see _standby_allowed).
+            self._wake_heard_at = time.monotonic()
+            return
         gate = self._voice_gate
         if gate is not None and not gate.recent_is_owner():
             self.ui.write_log("SYS: Heard 'Hey Jarvis' in a voice that isn't yours — staying asleep.")
@@ -1035,6 +1061,10 @@ class JarvisLive:
     def _standby_allowed(self) -> bool:
         """Guard for the model's shutdown_jarvis call — see
         SHUTDOWN_USER_WINDOW_SECONDS."""
+        if time.monotonic() - self._wake_heard_at < WAKE_NOT_BYE_SECONDS:
+            self.ui.write_log("SYS: Ignored a sleep request — I heard 'Hey Jarvis', not 'bye Jarvis'.")
+            print("[JARVIS] 🛡️ shutdown_jarvis ignored: the wake word was just heard")
+            return False
         if (time.monotonic() - self._last_user_speech) > SHUTDOWN_USER_WINDOW_SECONDS:
             self.ui.write_log(
                 "SYS: Ignored a sleep request — you hadn't said anything just before it."
@@ -1058,6 +1088,29 @@ class JarvisLive:
         self.ui.set_state("SLEEPING")
         self.ui.write_log(f"SYS: Sleeping — {reason}. Say 'Hey Jarvis' to wake me.")
 
+    async def _maybe_send_clock(self) -> None:
+        """Once a minute, at a quiet moment, tell the model the time without
+        asking for a reply — so "what time is it?" is answered at once from
+        context instead of costing a get_time round trip (~2 s of silence)."""
+        now = datetime.now()
+        minute = now.strftime("%H:%M")
+        if minute == self._clock_sent or self.session is None:
+            return
+        with self._speaking_lock:
+            speaking = self._is_speaking
+        if (speaking or self._generating or self._tools_running
+                or time.monotonic() - self._last_user_speech < 3):
+            return
+        try:
+            await self.session.send_client_content(
+                turns={"role": "user", "parts": [{"text":
+                    f"[CLOCK] {now.strftime('%I:%M %p, %A %B %d, %Y')}"}]},
+                turn_complete=False,
+            )
+            self._clock_sent = minute
+        except Exception as e:
+            print(f"[JARVIS] clock update failed: {e}")
+
     async def _run_sleep_watch(self) -> None:
         """Auto-sleep after the configured silence window (wake-word mode only),
         and keep the Live session alive while asleep."""
@@ -1068,6 +1121,7 @@ class JarvisLive:
                 await asyncio.to_thread(self._ensure_voice_gate)
             except Exception as e:
                 print(f"[VoiceID] ⚠️ {e}")
+            await self._maybe_send_clock()
             # The Live server drops a session that has had no input for ~30 s
             # ("1008 The operation was aborted"). The failure only surfaced on
             # the next thing the user said, eating it. Whenever nothing has
@@ -1509,7 +1563,7 @@ class JarvisLive:
         if loop is None or q is None:
             return
         try:
-            loop.call_soon_threadsafe(q.put_nowait, {"data": data, "mime_type": "audio/pcm"})
+            loop.call_soon_threadsafe(self._enqueue_audio, {"data": data, "mime_type": "audio/pcm"})
         except Exception:
             pass
 
@@ -2032,9 +2086,11 @@ class JarvisLive:
         now      = datetime.now()
         time_str = now.strftime("%A, %B %d, %Y — %I:%M %p")
         time_ctx = (
-            f"[CURRENT DATE & TIME]\n"
-            f"Right now it is: {time_str}\n"
-            f"Use this to calculate exact times for reminders.\n\n"
+            f"[SESSION START]\n"
+            f"This session started: {time_str}\n"
+            f"That is NOT the current time. [CLOCK] notes arrive every minute: answer the "
+            f"time or date from the latest one, never read the tag aloud, never reply to it. "
+            f"Call get_time only if there is no [CLOCK] note yet.\n\n"
         )
 
         # Identity injection — overrides any hardcoded name in prompt.txt
@@ -2632,6 +2688,9 @@ class JarvisLive:
                 r = await loop.run_in_executor(None, get_system_status)
                 result = str(r)
 
+            elif name == "get_time":
+                result = datetime.now().strftime("It is %I:%M %p on %A, %B %d, %Y.")
+
             elif name == "manage_monitor":
                 action = args.get("action", "").lower().strip()
                 topic  = args.get("topic", "").strip()
@@ -2938,9 +2997,35 @@ class JarvisLive:
             # doing nothing.
             self.ui.write_log(f"SYS: '{action}' isn't wired to a runnable action yet.")
 
+    def _enqueue_audio(self, item: dict) -> None:
+        """Loop thread: queue one mic chunk for Gemini. When the sender has
+        fallen behind and the queue is full, drop the OLDEST chunk (stale
+        audio is worth less than what is being said now) and report the
+        backlog once, instead of a traceback per chunk."""
+        q = self.out_queue
+        if q is None:
+            return
+        try:
+            q.put_nowait(item)
+            if self._audio_dropped:
+                print(f"[JARVIS] ⚠️ Mic backlog cleared — {self._audio_dropped} chunk(s) "
+                      f"(~{self._audio_dropped * CHUNK_SIZE / SEND_SAMPLE_RATE:.1f}s) were dropped.")
+                self._audio_dropped = 0
+        except asyncio.QueueFull:
+            if not self._audio_dropped:
+                print("[JARVIS] ⚠️ Mic backlog: audio is not reaching Gemini fast enough — "
+                      "dropping the oldest.")
+            self._audio_dropped += 1
+            try:
+                q.get_nowait()
+                q.put_nowait(item)
+            except Exception:
+                pass
+
     async def _send_realtime(self):
         while True:
             msg = await self.out_queue.get()
+            _t0 = time.monotonic()
             # Gemini 3.x Live rejects the old realtime_input.media_chunks field
             # (what `media=...` maps to) and closes the socket with a 1007. Send
             # mic / phone PCM through the new `audio` field instead. Queue items
@@ -2953,6 +3038,11 @@ class JarvisLive:
                 )
             )
             self._last_realtime_send = time.monotonic()
+            if self._last_realtime_send - _t0 > 1.0:
+                # The loop was free (see the watchdog) but the socket was not:
+                # the network or the server is what held the audio up.
+                print(f"[JARVIS] ⚠️ Sending audio to Gemini took "
+                      f"{self._last_realtime_send - _t0:.1f}s (slow connection).")
 
     async def _listen_audio(self):
         print("[JARVIS] 🎤 Mic started")
@@ -2982,6 +3072,11 @@ class JarvisLive:
                 return
             if self._voice_enrolling:
                 return
+            # Awake too, the detector hears every frame — only to tell a
+            # repeated "Hey Jarvis" apart from a goodbye (WAKE_NOT_BYE_SECONDS).
+            det = self._wake_detector
+            if det is not None and self._wake_enabled and not self._is_speaking:
+                det.feed(indata)     # not while JARVIS talks: no need, and it costs CPU mid-playback
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
 
@@ -3037,7 +3132,7 @@ class JarvisLive:
                     gate.feed(indata)
                 else:
                     loop.call_soon_threadsafe(
-                        self.out_queue.put_nowait,
+                        self._enqueue_audio,
                         {"data": indata.tobytes(), "mime_type": "audio/pcm"}
                     )
                 # Feed the live mic level to the HUD so the waveform reacts to
@@ -3175,6 +3270,11 @@ class JarvisLive:
                             # Split into ~50 ms chunks so interrupt() stops audio within 50 ms
                             # (24000 Hz × 2 bytes/sample × 0.05 s = 2400 bytes per slice)
                             _audio_data = response.data
+                            _now = time.monotonic()
+                            if self._reply_audio is None:
+                                self._reply_audio = [_now, _now, 0]
+                            self._reply_audio[1] = _now
+                            self._reply_audio[2] += len(_audio_data)
                             _SLICE = 2400
                             for _i in range(0, len(_audio_data), _SLICE):
                                 self.audio_in_queue.put_nowait(_audio_data[_i : _i + _SLICE])
@@ -3225,6 +3325,7 @@ class JarvisLive:
                                     )
 
                             self._generating = False
+                            self._report_reply_audio()
                             # If this turn_complete ends an interrupted response, clear the
                             # flag and skip all further processing for that turn.
                             if self._interrupted:
@@ -3388,6 +3489,9 @@ class JarvisLive:
                         self._turn_done_event.clear()
                     continue
 
+                # Already speaking = mid-reply: a starved speaker here is a real
+                # gap. The first batch after silence always reports one.
+                mid_reply = self._is_speaking
                 self.set_speaking(True)
 
                 # Batch all immediately-available chunks into one write to reduce
@@ -3451,7 +3555,9 @@ class JarvisLive:
                     pass
 
                 try:
-                    await asyncio.to_thread(stream.write, bytes(batch))
+                    underflowed = await asyncio.to_thread(stream.write, bytes(batch))
+                    if underflowed and mid_reply:
+                        self._underruns += 1
                 except (RuntimeError, asyncio.CancelledError):
                     break   # executor shutting down — exit cleanly
         except Exception as e:
@@ -3463,6 +3569,23 @@ class JarvisLive:
             stream.close()
 
     # ── Morning briefing ────────────────────────────────────────────────────────
+
+    def _report_reply_audio(self) -> None:
+        """At turn_complete: say plainly if this reply's audio came in slower
+        than it plays (network/server) or the speaker ran dry (local). Quiet
+        when all is well."""
+        stats, self._reply_audio = self._reply_audio, None
+        underruns, self._underruns = self._underruns, 0
+        if stats is None:
+            return
+        first, last, nbytes = stats
+        speech = nbytes / (RECEIVE_SAMPLE_RATE * 2)
+        span = last - first
+        if speech >= 1.0 and span > speech * 1.1:
+            print(f"[JARVIS] ⚠️ Reply audio arrived slower than real time: {speech:.1f}s of "
+                  f"speech took {span:.1f}s to arrive (network or Gemini is slow).")
+        if underruns:
+            print(f"[JARVIS] ⚠️ Speaker ran out of audio {underruns} time(s) during the reply.")
 
     def _compose_brief(self, memory: dict, depth: int) -> str:
         """Morning brief (news, patterns…) plus today's calendar and unread
@@ -3913,6 +4036,10 @@ class JarvisLive:
 
     async def run(self):
         self._loop = asyncio.get_event_loop()
+        # Prints the exact blocking line if anything freezes the loop (which
+        # stops mic audio, replies and playback all at once).
+        from core.loop_watchdog import LoopWatchdog
+        LoopWatchdog(self._loop).start()
         self._reconnect_event = asyncio.Event()
 
         # ── Wire the shared core services to the interface ───────────────────
@@ -4145,8 +4272,12 @@ class JarvisLive:
                     self._conn_backoff = 0
                     continue
 
-                print(f"[JARVIS] Error ({type(e).__name__}): {e}")
-                traceback.print_exc()
+                if kind == "network":
+                    # Expected when Wi-Fi drops or the Mac sleeps: one line, not a traceback.
+                    print(f"[JARVIS] Connection lost ({err_str.split(' | ')[-1][:120]}).")
+                else:
+                    print(f"[JARVIS] Error ({type(e).__name__}): {e}")
+                    traceback.print_exc()
 
                 # Out of quota, or this model is not available to this key —
                 # step down the ladder and reconnect straight away. This is the

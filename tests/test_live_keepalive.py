@@ -36,6 +36,10 @@ class KeepaliveTest(unittest.TestCase):
         j._tools_running = 0
         j._tail_active = lambda: False
         j._ensure_voice_gate = lambda: None
+
+        async def no_clock():
+            return None
+        j._maybe_send_clock = no_clock
         return j
 
     def _one_tick(self, j):

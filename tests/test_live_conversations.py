@@ -182,6 +182,7 @@ class LiveErrorTest(unittest.TestCase):
     def test_bad_key_and_network(self):
         self.assertEqual(self._kind("API key not valid"), "bad_key")
         self.assertEqual(self._kind("getaddrinfo failed"), "network")
+        self.assertEqual(self._kind("1006 None. abnormal closure [internal]"), "network")
 
     def test_internal_error_is_left_to_the_model_ladder(self):
         self.assertEqual(self._kind("1011 Internal error"), "other")

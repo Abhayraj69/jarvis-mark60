@@ -127,7 +127,24 @@ def _get_ddgs():
         return DDGS
 
 
+# Why the last _ddg_search came back empty, if it failed rather than found
+# nothing. Lets a fallback tell "no results" apart from "search is down".
+_last_ddg_error: str = ""
+
+
+def _fallback_results(query: str, gemini_error: Exception, **kw) -> list[dict]:
+    """DDG after Gemini failed. Raises when DDG failed too, so the user hears
+    "search failed" instead of a false "no results found"."""
+    results = _ddg_search(query, **kw)
+    if not results and _last_ddg_error:
+        raise RuntimeError(f"Gemini search unavailable ({str(gemini_error)[:80]}) "
+                           f"and the backup search failed ({_last_ddg_error[:80]})")
+    return results
+
+
 def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
+    global _last_ddg_error
+    _last_ddg_error = ""
     DDGS = _get_ddgs()
     results = []
     try:
@@ -140,6 +157,7 @@ def _ddg_search(query: str, max_results: int = 6) -> list[dict]:
                 })
     except Exception as e:
         print(f"[WebSearch] ⚠️ DDG text() failed: {e}")
+        _last_ddg_error = str(e)
     return results
 
 
@@ -246,7 +264,7 @@ def _search(query: str) -> str:
         return _gemini_search(query)
     except Exception as e:
         _log_gemini_failure("Gemini search", e)
-        results = _ddg_search(query)
+        results = _fallback_results(query, e)
         return _format_ddg(query, results)
 
 
@@ -297,7 +315,7 @@ def _research(query: str) -> str:
         return _gemini_search(research_query)
     except Exception as e:
         _log_gemini_failure("Gemini research", e)
-        results = _ddg_search(query, max_results=10)
+        results = _fallback_results(query, e, max_results=10)
         return _format_ddg(query, results)
 
 
@@ -308,7 +326,7 @@ def _price(query: str) -> str:
         return _gemini_search(price_query)
     except Exception as e:
         _log_gemini_failure("Gemini price", e)
-        results = _ddg_search(f"{query} price buy", max_results=6)
+        results = _fallback_results(f"{query} price buy", e, max_results=6)
         return _format_ddg(query, results)
 
 

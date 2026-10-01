@@ -14,6 +14,9 @@ _SYSTEM = platform.system()
 
 _APP_ALIASES: dict[str, dict[str, str]] = {
 
+    # macOS has no app called "Camera" — Photo Booth is the built-in one.
+    "camera":             {"Windows": "microsoft.windows.camera:", "Darwin": "Photo Booth",  "Linux": "cheese"},
+    "webcam":             {"Windows": "microsoft.windows.camera:", "Darwin": "Photo Booth",  "Linux": "cheese"},
     "chrome":             {"Windows": "chrome",                  "Darwin": "Google Chrome",        "Linux": "google-chrome"},
     "google chrome":      {"Windows": "chrome",                  "Darwin": "Google Chrome",        "Linux": "google-chrome"},
     "firefox":            {"Windows": "firefox",                 "Darwin": "Firefox",              "Linux": "firefox"},
@@ -191,7 +194,9 @@ def _launch_macos(app_name: str, file_path: str = "") -> bool:
         time.sleep(0.8)
         pyautogui.press("enter")
         time.sleep(1.5)
-        return True
+        # Truthy, but not True: whatever Spotlight ranked first was opened,
+        # which may not be the app that was asked for.
+        return "spotlight"
     except Exception as e:
         print(f"[open_app] Spotlight failed: {e}")
 
@@ -323,12 +328,20 @@ def open_app(
     if player:
         player.write_log(f"[open_app] {app_name}")
 
+    def _opened(how) -> str:
+        if how == "spotlight":
+            return (f"No app called {app_name} is installed, so I opened Spotlight's top "
+                    f"match for it — it may not be the right app.")
+        return f"Opened {app_name}" + (f" with {Path(file_path).name}." if file_path else ".")
+
     try:
-        if launcher(normalized, file_path):
-            return f"Opened {app_name}" + (f" with {Path(file_path).name}." if file_path else ".")
+        how = launcher(normalized, file_path)
+        if how:
+            return _opened(how)
         if normalized.lower() != app_name.lower():
-            if launcher(app_name, file_path):
-                return f"Opened {app_name}" + (f" with {Path(file_path).name}." if file_path else ".")
+            how = launcher(app_name, file_path)
+            if how:
+                return _opened(how)
         return (
             f"Could not confirm that {app_name} launched. "
             f"It may still be loading, or it might not be installed."

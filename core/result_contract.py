@@ -43,6 +43,7 @@ FAILURE_PREFIXES = (
     "could not", "couldn't", "cannot", "can't", "unable to",
     "unknown", "error", "failed", "failure",
     "not available", "no such", "not found", "invalid",
+    "search failed",     # web_search: every backend down (not "no results")
     "action '",          # ActionRegistry: "Action 'x' is not available."
 )
 # ...unless it is one of these, which are status reports, not failures.
