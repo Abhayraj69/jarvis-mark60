@@ -42,6 +42,22 @@ pillow>=10,<13
 opencv-python>=4.8,<5
 mss>=9,<11
 
+# ── Local speech-to-text ──────────────────────────────────────────────────────
+# Whisper on this machine (CPU is fine; the "tiny" model is ~75 MB, downloaded
+# on first use). It settles every "bye Jarvis": the wake-word detector scores a
+# goodbye as high as "Hey Jarvis", so the sleep request is checked against a
+# local transcript of your last few seconds. Without it, goodbyes fall back to
+# the cloud model's word alone. Local Mode's speech input uses it too.
+#
+# macOS note: faster-whisper pulls in PyAV, and PyAV and opencv-python each
+# bundle their own FFmpeg. At launch the ObjC runtime prints "Class
+# AVFFrameReceiver is implemented in both ... mysterious crashes". Those two
+# classes belong to FFmpeg's avfoundation *capture device*, which nothing in
+# JARVIS opens (the camera goes through OpenCV's own AVFoundation backend and
+# Whisper is fed numpy audio), so the warning is harmless here.
+# tests/test_ffmpeg_overlap.py fails if code is ever added that would use them.
+faster-whisper>=1.0,<2
+
 # ── System, files & documents ─────────────────────────────────────────────────
 psutil>=5.9,<8
 send2trash                   # file_controller — recoverable deletes
@@ -110,7 +126,6 @@ pynvml                       # system_monitor + the HUD's GPU meter (NVIDIA)
 
 # ── Optional: Arc Sentinel voice widget (widget/wake_widget_daemon.py) ────────
 # A standalone companion process, not required to run JARVIS itself. Reuses
-# openwakeword above for "Hey Jarvis"; also needs:
-#   pip install pywebview faster-whisper
-# (faster-whisper is the same library core/stt.py already uses for local STT —
-# only needed here if you haven't installed it for that already.)
+# openwakeword above for "Hey Jarvis" and faster-whisper from the core list;
+# the only extra it needs is the window toolkit:
+#   pip install pywebview
