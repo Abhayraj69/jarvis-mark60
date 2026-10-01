@@ -615,6 +615,7 @@ class JarvisLive:
         self._think_tasks: set     = set()   # background `think` tasks (kept so they aren't GC'd)
         self._vision_busy          = False   # True while a vision capture/inject cycle is in flight
         self._interrupted          = False   # True while draining audio after user interrupt
+        self._generating           = False   # server is still producing the current reply
         # Transcript-driven mouth shapes for the avatar. Fed from the receive
         # loop as words arrive, drained by the playback loop against the audio.
         self._visemes              = VisemeStream()
@@ -1645,7 +1646,13 @@ class JarvisLive:
 
     def interrupt(self) -> None:
         """Stop JARVIS mid-speech: drain queued audio and open mic immediately."""
-        self._interrupted = True
+        # Only discard incoming audio if the server is still generating this
+        # reply — its turn_complete is what clears the flag again. Interrupting
+        # while just the locally buffered tail was playing (the reply already
+        # complete), or while idle, used to leave the flag set with no
+        # turn_complete coming, so the NEXT answer was silently thrown away:
+        # JARVIS "randomly stopped responding" after Esc / the stop button.
+        self._interrupted = self._generating
         q = self.audio_in_queue
         if q:
             drained = 0
@@ -2473,6 +2480,23 @@ class JarvisLive:
 
         asyncio.ensure_future(_run())
 
+    def _spawn(self, coro) -> None:
+        """Schedule a coroutine on JARVIS's asyncio loop from ANY thread.
+        asyncio.ensure_future() from the Qt thread (the suggestion buttons)
+        made a task on a loop that never runs — "There is no current event
+        loop" — so RUN on a suggestion silently did nothing."""
+        loop = self._loop
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is not None and running is loop:
+            asyncio.ensure_future(coro)
+        elif loop is not None:
+            asyncio.run_coroutine_threadsafe(coro, loop)
+        else:
+            coro.close()
+
     def _on_suggestion_decision(self, accepted: bool, suggestion: dict) -> None:
         """UI callback for the SuggestionHint's RUN/DISMISS buttons. RUN is the
         explicit human confirmation the spec requires — nothing here ever
@@ -2496,13 +2520,13 @@ class JarvisLive:
                     context=self.ui.current_file or "",
                 ),
             )
-        asyncio.ensure_future(_record())
+        self._spawn(_record())
 
         if not accepted:
             return
 
         if self._action_registry.has(action):
-            asyncio.ensure_future(self._dispatch_tool(action, {}))
+            self._spawn(self._dispatch_tool(action, {}))
         elif pattern_key.startswith("manual:"):
             # A repeated-manual-steps suggestion names a sequence of steps
             # ("step1 then step2"), not a single registered tool. Reconstruct
@@ -2527,7 +2551,7 @@ class JarvisLive:
                 })
                 self.ui.write_log(f"SYS: {result}")
 
-            asyncio.ensure_future(_save_as_macro())
+            self._spawn(_save_as_macro())
         else:
             # Neither a registered tool nor a reconstructable manual-step
             # sequence — nothing to run yet, so say so instead of silently
@@ -2748,6 +2772,7 @@ class JarvisLive:
                             self._resume_handle = _sru.new_handle
 
                     if response.data:
+                        self._generating = True
                         if self._interrupted:
                             pass  # discard: interrupted
                         else:
@@ -2805,6 +2830,7 @@ class JarvisLive:
                                         tokens_out=getattr(usage, "response_token_count", None),
                                     )
 
+                            self._generating = False
                             # If this turn_complete ends an interrupted response, clear the
                             # flag and skip all further processing for that turn.
                             if self._interrupted:
@@ -3504,6 +3530,7 @@ class JarvisLive:
                     self._vision_busy          = False
                     self._vision_last_time     = 0.0
                     self._interrupted          = False
+                    self._generating           = False
 
                     print("[JARVIS] Connected.")
                     if _resumed_with:
