@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import result_contract as rc  # noqa: E402
 from core import telemetry  # noqa: E402
+import live.tools  # noqa: E402
 
 
 class ClassifyTests(unittest.TestCase):
@@ -208,7 +209,7 @@ class MainWiringTests(unittest.TestCase):
         j = self._bare()
         j._apply_result_contract("file_controller", "Could not move it")
         j._note_spoken_for_contract("Done, sir.")
-        with patch.object(main.telemetry, "record_false_success") as rec:
+        with patch.object(live.tools.telemetry, "record_false_success") as rec:
             j._conclude_false_success(force=True)
         rec.assert_called_once()
         self.assertEqual(rec.call_args[0][0], ["file_controller"])
@@ -219,7 +220,7 @@ class MainWiringTests(unittest.TestCase):
         j = self._bare()
         j._apply_result_contract("file_controller", "Could not move it")
         j._note_spoken_for_contract("I couldn't move it — it's read-only.")
-        with patch.object(main.telemetry, "record_false_success") as rec:
+        with patch.object(live.tools.telemetry, "record_false_success") as rec:
             j._conclude_false_success(force=True)
         rec.assert_not_called()
 
@@ -227,7 +228,7 @@ class MainWiringTests(unittest.TestCase):
         import main
         j = self._bare()
         j._apply_result_contract("x", "Error: nope")
-        with patch.object(main.telemetry, "record_false_success") as rec:
+        with patch.object(live.tools.telemetry, "record_false_success") as rec:
             j._conclude_false_success()          # not forced, deadline not reached
         rec.assert_not_called()
         self.assertTrue(j._false_success.pending)

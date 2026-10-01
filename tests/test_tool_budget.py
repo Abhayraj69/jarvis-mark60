@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 import main  # noqa: E402
+from tests.live_harness import patch_everywhere  # noqa: E402
 from core.action_loader import discover_actions  # noqa: E402
 from tool_connectors.registry import ToolRegistry  # noqa: E402
 
@@ -119,16 +120,16 @@ class LiveContextLimitsTests(unittest.TestCase):
 
     def test_defaults(self):
         from unittest.mock import patch
-        with patch.object(main, "_load_api_config", return_value={}):
+        with patch_everywhere("_load_api_config", return_value={}):
             self.assertEqual(self._bare()._live_context_limits(), (12_000, 6_000))
 
     def test_override_and_clamp(self):
         from unittest.mock import patch
         cfg = {"live_context": {"trigger_tokens": 20_000, "target_tokens": 8_000}}
-        with patch.object(main, "_load_api_config", return_value=cfg):
+        with patch_everywhere("_load_api_config", return_value=cfg):
             self.assertEqual(self._bare()._live_context_limits(), (20_000, 8_000))
         cfg = {"live_context": {"trigger_tokens": "garbage", "target_tokens": 999_999}}
-        with patch.object(main, "_load_api_config", return_value=cfg):
+        with patch_everywhere("_load_api_config", return_value=cfg):
             trigger, target = self._bare()._live_context_limits()
             self.assertEqual(trigger, 12_000)
             self.assertEqual(target, 11_000)   # clamped to trigger - 1000

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from core import think  # noqa: E402
+import live.tools  # noqa: E402
 from core import backend_router as router  # noqa: E402
 from core.backend_router import TaskKind  # noqa: E402
 
@@ -207,6 +208,7 @@ class ThinkDeliveryTests(unittest.TestCase):
 
     def _bare(self):
         import main
+        from tests.live_harness import patch_everywhere
         import threading
         j = object.__new__(main.JarvisLive)
         j.ui = MagicMock()
@@ -227,6 +229,7 @@ class ThinkDeliveryTests(unittest.TestCase):
 
     def _run(self, j, fake_result_sentences, backend="gemini", raise_exc=None):
         import main
+        from tests.live_harness import patch_everywhere
 
         def fake_run(query, session_log, include_screen, on_sentence, policy, **kw):
             if raise_exc:
@@ -242,8 +245,8 @@ class ThinkDeliveryTests(unittest.TestCase):
             await real_sleep(0)
 
         async def go():
-            with patch.object(main.think_core, "run", fake_run), \
-                 patch.object(main, "get_plugin_config", return_value={}), \
+            with patch.object(live.tools.think_core, "run", fake_run), \
+                 patch_everywhere("get_plugin_config", return_value={}), \
                  patch.object(main.asyncio, "sleep", quick_sleep):
                 await j._run_think(self._fc(), {"query": "why", "include_screen": False})
         asyncio.run(go())
@@ -287,12 +290,14 @@ class ThinkDeliveryTests(unittest.TestCase):
 
     def test_empty_query(self):
         import main
+        from tests.live_harness import patch_everywhere
         j = self._bare()
         asyncio.run(j._run_think(self._fc(), {"query": "   "}))
         self.assertFalse(j.session.tool_responses[0][0].response["ok"])
 
     def test_execute_tool_returns_none_for_think(self):
         import main
+        from tests.live_harness import patch_everywhere
         j = self._bare()
         started = {}
         j._start_think = lambda fc, args: started.update(args=args)
@@ -303,6 +308,7 @@ class ThinkDeliveryTests(unittest.TestCase):
 
     def test_declaration_is_non_blocking(self):
         import main
+        from tests.live_harness import patch_everywhere
         decl = next(d for d in main.TOOL_DECLARATIONS if d["name"] == "think")
         self.assertEqual(decl["behavior"], "NON_BLOCKING")
         self.assertEqual(decl["parameters"]["required"], ["query"])

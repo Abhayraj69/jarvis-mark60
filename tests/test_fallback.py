@@ -7,7 +7,7 @@ from unittest.mock import patch
 import main
 from core import fallback, tts
 from core.fallback import CloudHealth
-from tests.live_harness import make_jarvis
+from tests.live_harness import make_jarvis, patch_everywhere
 
 
 class Clock:
@@ -93,7 +93,7 @@ class SwitchTest(unittest.TestCase):
         j._run_local_loop = local
         j._wait_for_cloud = probe
         self.patches = [
-            patch.object(main, "get_plugin_config", return_value={}),
+            patch_everywhere("get_plugin_config", return_value={}),
             patch.object(fallback, "local_readiness",
                          return_value=(ready, [] if ready else ["a local LLM"])),
         ]
@@ -124,7 +124,7 @@ class SwitchTest(unittest.TestCase):
 
     def test_switched_off(self):
         j = self._jarvis()
-        with patch.object(main, "get_plugin_config", return_value={"auto_fallback": False}):
+        with patch_everywhere("get_plugin_config", return_value={"auto_fallback": False}):
             self.assertFalse(asyncio.run(j._maybe_fall_back(models_resting=True)))
         self.assertEqual(j.calls, [])
 

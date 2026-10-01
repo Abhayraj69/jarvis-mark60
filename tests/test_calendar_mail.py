@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import main
 from core import mac_apps
-from tests.live_harness import make_jarvis
+from tests.live_harness import make_jarvis, patch_everywhere
 
 
 def ts(h, m=0):
@@ -95,7 +95,7 @@ class BriefingTest(unittest.TestCase):
         j = make_jarvis()
         j._proactive.get_morning_brief = lambda m, d: "News: rain later."
         replies = {"check_calendar": "Today: 09:30 Standup.", "check_email": "2 unread emails."}
-        with patch.object(main, "get_plugin_config", return_value={}), \
+        with patch_everywhere("get_plugin_config", return_value={}), \
              patch.object(j._plugin_registry, "has", return_value=True), \
              patch.object(j._plugin_registry, "run", side_effect=lambda t, a: replies[t]):
             brief = j._compose_brief({}, 0)
@@ -104,7 +104,7 @@ class BriefingTest(unittest.TestCase):
     def test_unreadable_agenda_is_left_out(self):
         j = make_jarvis()
         j._proactive.get_morning_brief = lambda m, d: "News."
-        with patch.object(main, "get_plugin_config", return_value={}), \
+        with patch_everywhere("get_plugin_config", return_value={}), \
              patch.object(j._plugin_registry, "has", return_value=True), \
              patch.object(j._plugin_registry, "run", return_value="Could not check email: Mail isn't open"):
             self.assertEqual(j._compose_brief({}, 0), "News.")
@@ -118,8 +118,8 @@ class BriefingTest(unittest.TestCase):
             async def fake_brief():
                 briefed.append(True)
             j._send_startup_briefing = fake_brief
-            with patch.object(main, "get_brief_enabled", return_value=True), \
-                 patch.object(main, "BRIEF_AFTER_WAKE_SECONDS", 0.05):
+            with patch_everywhere("get_brief_enabled", return_value=True), \
+                 patch_everywhere("BRIEF_AFTER_WAKE_SECONDS", 0.05):
                 j.wake()
                 if then:
                     then(j)

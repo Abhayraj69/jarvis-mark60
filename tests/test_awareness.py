@@ -7,7 +7,7 @@ from unittest.mock import patch
 import main
 from core import awareness
 from core.awareness import Awareness
-from tests.live_harness import make_jarvis
+from tests.live_harness import make_jarvis, patch_everywhere
 
 MIN = 60.0
 
@@ -124,7 +124,7 @@ class DeliveryTest(unittest.TestCase):
         async def run():
             j.session = FakeSink()
             with patch.object(main.asyncio, "sleep", one_pass), \
-                 patch.object(main, "get_plugin_config", return_value=cfg), \
+                 patch_everywhere("get_plugin_config", return_value=cfg), \
                  patch("core.input_guard.frontmost", return_value=app), \
                  patch.object(awareness, "idle_seconds", return_value=0.0):
                 try:

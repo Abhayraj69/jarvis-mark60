@@ -310,7 +310,14 @@ python main.py
 
 ```
 Mark LV/
-├── main.py                   # Core loop — Gemini Live session, audio I/O, viseme extraction, tool dispatch
+├── main.py                   # JarvisLive: startup, the connect/reconnect loop, main()
+├── live/                     # The Live session split by concern, mixed into JarvisLive
+│   ├── wake.py               #   wake word, sleep, auto-sleep
+│   ├── audio_io.py           #   mic → Gemini → speakers
+│   ├── tools.py              #   tool dispatch, background tools, think, result contract
+│   ├── session_config.py     #   system prompt, tool list, connect config
+│   ├── local_mode.py         #   offline pipeline and automatic fallback
+│   └── …                     #   settings panels, dashboard, briefing, background loops, constants
 ├── ui.py                     # PyQt6 HUD — avatar canvas, waveform, log panel, settings drawer, camera feed
 ├── setup.py                  # OS-aware installer (skips wrong-OS dependencies, checks your Python)
 ├── .gitignore                # Keeps your API key, TLS key and memories out of the repository

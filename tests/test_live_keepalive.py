@@ -4,6 +4,9 @@ quiet immediate reconnect when a working session is dropped anyway."""
 import asyncio
 import time
 import unittest
+
+import live.constants
+import live.errors
 from unittest.mock import MagicMock
 
 
@@ -11,15 +14,15 @@ class IdleDropTest(unittest.TestCase):
     def test_1008_on_working_session_is_idle_drop(self):
         import main
         err = "unhandled errors in a TaskGroup | 1008 None. The operation was aborted."
-        self.assertTrue(main._is_idle_drop(err, uptime=150.0))
+        self.assertTrue(live.errors._is_idle_drop(err, uptime=150.0))
 
     def test_1008_right_after_connect_is_not(self):
         import main
-        self.assertFalse(main._is_idle_drop("1008 None. The operation was aborted.", uptime=2.0))
+        self.assertFalse(live.errors._is_idle_drop("1008 None. The operation was aborted.", uptime=2.0))
 
     def test_other_errors_are_not(self):
         import main
-        self.assertFalse(main._is_idle_drop("1011 Internal error", uptime=150.0))
+        self.assertFalse(live.errors._is_idle_drop("1011 Internal error", uptime=150.0))
 
 
 class KeepaliveTest(unittest.TestCase):
@@ -67,14 +70,14 @@ class KeepaliveTest(unittest.TestCase):
 
     def test_keepalive_sent_while_awake_and_idle(self):
         import main
-        j = self._jarvis(awake=True, idle_for=main.KEEPALIVE_IDLE_SECONDS + 1)
+        j = self._jarvis(awake=True, idle_for=live.constants.KEEPALIVE_IDLE_SECONDS + 1)
         self._one_tick(j)
         self.assertEqual(j.out_queue.qsize(), 1)
-        self.assertEqual(j.out_queue.get_nowait()["data"], main._KEEPALIVE_SILENCE)
+        self.assertEqual(j.out_queue.get_nowait()["data"], live.constants._KEEPALIVE_SILENCE)
 
     def test_keepalive_sent_while_asleep_and_idle(self):
         import main
-        j = self._jarvis(awake=False, idle_for=main.KEEPALIVE_IDLE_SECONDS + 1)
+        j = self._jarvis(awake=False, idle_for=live.constants.KEEPALIVE_IDLE_SECONDS + 1)
         self._one_tick(j)
         self.assertEqual(j.out_queue.qsize(), 1)
 
