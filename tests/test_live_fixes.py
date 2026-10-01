@@ -21,32 +21,59 @@ class TimeTest(unittest.TestCase):
         self.assertIn("get_time", {t["name"] for t in main.TOOL_DECLARATIONS})
 
 
-class WakeNotByeTest(unittest.TestCase):
-    def test_hey_jarvis_heard_as_bye_is_ignored(self):
-        # 12:20:33 — "Hey Jarvis" said while awake, transcribed "Bye, Jarvis".
+class SleepCheckTest(unittest.TestCase):
+    """A sleep request is settled by a local transcript of the user's last
+    seconds, because Gemini sometimes hears "Hey Jarvis" as "Bye, Jarvis"
+    and the wake detector scores both the same."""
+
+    def _jarvis(self, local):
         j = make_jarvis()
-        s = play(j, [lambda j: j._on_wake_detected(),
-                     heard("Bye, Jarvis. Bye, Jarvis."), tool_call("shutdown_jarvis")])
+        j._local_transcript = lambda: local
+        return j
+
+    def test_hey_jarvis_heard_as_bye_is_ignored(self):
+        j = self._jarvis("Hey Jarvis.")
+        s = play(j, [heard("Bye, Jarvis."), tool_call("shutdown_jarvis")])
         self.assertTrue(j._awake)
         self.assertIn("ignored", s.tool_responses[0].response["result"])
-        self.assertTrue(any("not 'bye Jarvis'" in l for l in j.ui.logs))
+        self.assertTrue(any('I heard "Hey Jarvis."' in l for l in j.ui.logs))
 
-    def test_real_goodbye_still_works(self):
-        j = make_jarvis()
-        j._wake_heard_at = time.monotonic() - main.WAKE_NOT_BYE_SECONDS - 1
+    def test_real_goodbye_sleeps(self):
+        # 19:32:51 — "Bye, Jarvis." was refused by the old wake-word check.
+        j = self._jarvis("Bye, Jarvis.")
+        play(j, [heard("Bye, Jarvis."), tool_call("shutdown_jarvis")])
+        self.assertFalse(j._awake)
+
+    def test_sleep_jarvis_sleeps(self):
+        j = self._jarvis("Sleep, Jarvis.")
+        play(j, [heard("Sleep, Jarvis."), tool_call("shutdown_jarvis")])
+        self.assertFalse(j._awake)
+
+    def test_without_local_check_gemini_transcript_decides(self):
+        j = self._jarvis(None)
         play(j, [heard("bye jarvis"), tool_call("shutdown_jarvis")])
         self.assertFalse(j._awake)
-
-    def test_wake_word_while_awake_does_not_rewake_or_brief(self):
-        j = make_jarvis()
-        j._on_wake_detected()
+        j = self._jarvis(None)
+        play(j, [heard("open youtube"), tool_call("shutdown_jarvis")])
         self.assertTrue(j._awake)
-        self.assertNotEqual(j._wake_heard_at, -1e9)
+
+    def test_misspelled_sleep_jarvis(self):
+        for text in ("Sleep Javas.", "Jarvas, go to sleep"):
+            self.assertTrue(main._FAREWELL_RE.search(text), text)
+        for text in ("Hey Jarvis.", "I can't sleep", "sleep apnea just"):
+            self.assertFalse(main._FAREWELL_RE.search(text), text)
 
     def test_end_session_is_a_goodbye(self):
-        j = make_jarvis()
+        j = self._jarvis("End session.")
         play(j, [heard("End session"), tool_call("shutdown_jarvis")])
         self.assertFalse(j._awake)
+
+    def test_ring_buffer_keeps_only_the_last_seconds(self):
+        import numpy as np
+        j = make_jarvis()
+        for _ in range(400):                      # ~25 s of 1024-sample blocks
+            j._remember_mic(np.ones(1024, dtype=np.int16))
+        self.assertLessEqual(j._recent_mic_len, main.SLEEP_CHECK_SECONDS * main.SEND_SAMPLE_RATE + 1024)
 
 
 class SearchFailureTest(unittest.TestCase):
@@ -187,3 +214,95 @@ class ClockNoteTest(unittest.TestCase):
         j._clock_sent = "00:00"
         asyncio.run(j._maybe_send_clock())
         self.assertEqual(len(j.session.sent), 2)
+
+
+class FollowUpWindowTest(unittest.TestCase):
+    def setUp(self):
+        p = patch.object(main, "get_plugin_config", return_value={})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_sleeps_after_follow_up_window(self):
+        from tests.live_harness import elapse, tick_sleep_watch
+        j = make_jarvis()
+        elapse(main.FOLLOW_UP_SECONDS + 1)(j)
+        tick_sleep_watch(j)
+        self.assertFalse(j._awake)
+
+    def test_still_awake_inside_the_window(self):
+        from tests.live_harness import elapse, tick_sleep_watch
+        j = make_jarvis()
+        elapse(main.FOLLOW_UP_SECONDS - 10)(j)
+        tick_sleep_watch(j)
+        self.assertTrue(j._awake)
+
+
+class LocalGoodbyeTest(unittest.TestCase):
+    """19:41 — the backup model heard "By javas" and never called
+    shutdown_jarvis. Goodbyes are now handled locally."""
+
+    def setUp(self):
+        for p in (patch.object(main, "FAST_VOICE_SETTLE_SECONDS", 0.05),
+                  patch.object(main, "get_plugin_config", return_value={})):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def _run(self, transcript, local, extra=()):
+        from tests.live_harness import pause
+        j = make_jarvis()
+        j._local_transcript = lambda: local
+        play(j, [heard(transcript), *extra, pause(0.2)])
+        return j
+
+    def test_garbled_goodbye_without_a_tool_call_sleeps(self):
+        self.assertFalse(self._run("By javas", "Bye, Jarvis.")._awake)
+
+    def test_hey_jarvis_misheard_as_bye_does_not(self):
+        self.assertTrue(self._run("Bye, Jarvis.", "Hey Jarvis.")._awake)
+
+    def test_no_local_check_trusts_the_transcript(self):
+        self.assertFalse(self._run("Sleep, Jarvis.", None)._awake)
+
+    def test_more_speech_cancels_it(self):
+        self.assertTrue(self._run("bye", "bye, I'll call you later",
+                                  extra=[heard("I'll call you later")])._awake)
+
+    def test_ordinary_sentences_never_trigger(self):
+        for text in ("by the way", "Jazz", "what are you doing"):
+            self.assertTrue(self._run(text, "Bye Jarvis")._awake, text)
+
+
+class QuietAfterGoodbyeTest(unittest.TestCase):
+    def test_reply_after_goodbye_is_not_played(self):
+        from tests.live_harness import audio, said, queued_audio_bytes, turn_complete
+        j = make_jarvis()
+        j._local_transcript = lambda: "Bye, Jarvis."
+        play(j, [heard("Bye, Jarvis."), tool_call("shutdown_jarvis"),
+                 said("Goodbye, sir. Call me when you need me."), audio(), audio(), turn_complete()])
+        self.assertFalse(j._awake)
+        self.assertEqual(queued_audio_bytes(j), 0)
+
+    def test_awake_replies_still_play(self):
+        from tests.live_harness import audio, said, queued_audio_bytes, turn_complete
+        j = make_jarvis()
+        play(j, [heard("hello"), said("Hello, sir."), audio(), turn_complete()])
+        self.assertGreater(queued_audio_bytes(j), 0)
+
+
+class SleepingDisplayTest(unittest.TestCase):
+    def test_hud_keeps_showing_sleeping_after_goodbye(self):
+        from tests.live_harness import audio, said, turn_complete
+        j = make_jarvis()
+        j._local_transcript = lambda: "Bye, Jarvis."
+        play(j, [heard("Bye, Jarvis."), tool_call("shutdown_jarvis"),
+                 said("Goodbye."), audio(), turn_complete()])
+        j.set_speaking(True)
+        j.set_speaking(False)           # what playback does when the reply ends
+        self.assertFalse(j._awake)
+        self.assertEqual(j.ui.state, "SLEEPING")
+
+    def test_awake_still_shows_listening(self):
+        j = make_jarvis()
+        j.set_speaking(True)
+        j.set_speaking(False)
+        self.assertEqual(j.ui.state, "LISTENING")

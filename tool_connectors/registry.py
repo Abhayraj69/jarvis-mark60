@@ -38,7 +38,7 @@ try:
 except Exception:  # pragma: no cover — package used outside the JARVIS tree
     class _NoConfirmGate:
         @staticmethod
-        def request(key, title, detail, run):
+        def request(key, title, detail, run, always=False):
             return (f"I cannot confirm '{title}' right now because no confirmation "
                     f"interface is available, so I have not done it.")
 
@@ -205,6 +205,7 @@ class ToolRegistry:
             title=title,
             detail=detail,
             run=_do,
+            always=True,      # data-loss operations keep their confirmation
         )
 
     def _run(self, connector: ToolConnector, action: str, params: dict, safety: ActionSafety) -> ExecutionResult:

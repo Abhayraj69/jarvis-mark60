@@ -26,6 +26,10 @@ config/whatsapp_web/
 # ── Personal data the assistant accumulates about you ─────────────────────────
 memory/long_term.json
 memory/*.db
+# Voice ID: your voiceprint, and downloaded models (~30 MB)
+memory/voice_profile.npy
+memory/models/
+memory/live_model_rest.json
 
 # ── Python build noise ────────────────────────────────────────────────────────
 __pycache__/

@@ -35,7 +35,6 @@ class KeepaliveTest(unittest.TestCase):
         j._is_speaking = True          # a long reply playing: mic not streamed
         j._tools_running = 0
         j._tail_active = lambda: False
-        j._ensure_voice_gate = lambda: None
 
         async def no_clock():
             return None

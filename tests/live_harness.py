@@ -192,7 +192,6 @@ def make_jarvis(*, wake_word: bool = True, awake: bool = True, tools: dict | Non
          patch.object(main, "ToolRegistry", return_value=registry):
         j = main.JarvisLive(FakeUI())
 
-    j._ensure_voice_gate = lambda: None   # reads the real settings file otherwise
     j._awake = awake
     j._has_connected = True          # scripts start mid-run, not at first launch
     j.audio_in_queue = asyncio.Queue()

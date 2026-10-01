@@ -27,6 +27,8 @@ if TestClient is not None:
 class TestDashboardRemoteState(unittest.TestCase):
     def setUp(self):
         confirm_gate._pending = None
+        confirm_gate._force = True            # off by default; this tests the gate itself
+        self.addCleanup(setattr, confirm_gate, "_force", None)
         confirm_gate._show_cb = confirm_gate._hide_cb = confirm_gate._log_cb = None
         undo_stack._stack.clear()
         undo_stack._on_change = None

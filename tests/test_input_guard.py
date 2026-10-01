@@ -60,12 +60,14 @@ class _Gate:
 
     def __enter__(self):
         self.shown = []
+        confirm._force = True                 # the gate is off by default
         confirm.bind(lambda t, d: self.shown.append((t, d)), lambda: None, lambda m: None)
         return self
 
     def __exit__(self, *exc):
         confirm.bind(None, None, None)
         confirm._pending = None
+        confirm._force = None
 
 
 class ComputerControlTest(unittest.TestCase):
@@ -123,6 +125,39 @@ class SendMessageTest(unittest.TestCase):
             result = sm.send_message({"receiver": "Mom", "message_text": "Home by 8"})
         self.assertEqual(result, "Message sent to Mom.")
         deliver.assert_called_once()
+
+
+class ConfirmationsOffTest(unittest.TestCase):
+    """The default: JARVIS acts at once, no banner."""
+
+    def setUp(self):
+        confirm._force = False
+        self.addCleanup(setattr, confirm, "_force", None)
+
+    def test_enter_in_whatsapp_happens_at_once(self):
+        from actions import computer_control as cc
+        with patch.object(input_guard, "frontmost", return_value=("WhatsApp", "")), \
+             patch.object(input_guard, "load_settings", return_value=Settings()), \
+             patch.object(input_guard, "acting"), \
+             patch.object(cc, "_perform", return_value="Pressed: enter") as perform, \
+             patch.object(cc, "_focus_window"):
+            result = cc.computer_control({"action": "press", "key": "enter"})
+        self.assertEqual(result, "Pressed: enter")
+        perform.assert_called_once()
+
+    def test_send_message_sends_at_once(self):
+        from actions import send_message as sm
+        with patch.object(sm, "_PYAUTOGUI", True), \
+             patch.object(input_guard, "load_settings", return_value=Settings()), \
+             patch.object(sm, "_deliver", return_value="Message sent to Mom.") as deliver:
+            self.assertEqual(sm.send_message({"receiver": "Mom", "message_text": "hi"}),
+                             "Message sent to Mom.")
+        deliver.assert_called_once()
+
+    def test_off_is_the_default(self):
+        confirm._force = None
+        with patch("memory.config_manager.get_plugin_config", return_value={}):
+            self.assertFalse(confirm.enabled())
 
 
 if __name__ == "__main__":

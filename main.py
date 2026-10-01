@@ -49,6 +49,7 @@ for _stream in ("stdout", "stderr"):
 # ─────────────────────────────────────────────────────────────────────────────
 
 import asyncio
+import collections
 import concurrent.futures
 import contextlib
 import re
@@ -111,7 +112,6 @@ from core                      import sentiment_adapter
 from core                      import telemetry
 from core                      import result_contract
 from core                      import think as think_core
-from core                      import voice_id
 from core                      import fallback
 from core                      import awareness
 from tool_connectors.registry  import ToolRegistry
@@ -132,6 +132,11 @@ BRIEF_AFTER_WAKE_SECONDS = 4.0
 # How long the assistant stays awake with no user speech before it auto-sleeps
 # again (wake-word mode only).
 WAKE_SLEEP_TIMEOUT = 120.0   # seconds (2 minutes)
+# Default listening window after the last exchange (Plugin Settings →
+# LISTENING). Two minutes awake and idle is where the random replies came
+# from — the room's chatter, a video, a TV — so it goes back to needing
+# "Hey Jarvis" much sooner.
+FOLLOW_UP_SECONDS = 45.0
 # 100 ms of 16 kHz int16 silence, sent whenever nothing else has gone to the
 # Live session for KEEPALIVE_IDLE_SECONDS, to keep it open (see _run_sleep_watch).
 _KEEPALIVE_SILENCE = bytes(3200)
@@ -168,14 +173,28 @@ SHUTDOWN_USER_WINDOW_SECONDS = 10.0
 # English and Hindi/Hinglish; the HUD's sleep button covers anything else.
 _FAREWELL_RE = re.compile(
     r"\b(bye|goodbye|good ?night|see you|that'?s all|go to sleep|sleep now|"
-    r"stop listening|shut ?down|end (?:the |this )?session|alvida|so ja(o)?|chalo bye)\b"
+    r"stop listening|shut ?down|end (?:the |this )?session|sleep,? j\w{3,6}|j\w{3,6},? (?:go to )?sleep|"
+    r"alvida|so ja(o)?|chalo bye)\b"
     r"|अलविदा|बाय|शुभ रात्रि|सो जाओ",
     re.IGNORECASE,
 )
 # "Hey Jarvis" said while already awake reaches the model as "Bye, Jarvis"
-# often enough to put it to sleep. The wake detector also listens while awake;
-# a sleep request this soon after it heard "Hey Jarvis" is that mishearing.
-WAKE_NOT_BYE_SECONDS = 5.0
+# often enough to put it to sleep. The wake-word detector cannot settle it — it
+# scores "Bye Jarvis" as high as "Hey Jarvis" (0.97 on 2026-10-01), so using it
+# blocked every real goodbye. Instead a sleep request is checked against a
+# local Whisper transcript of the last SLEEP_CHECK_SECONDS of the user's audio.
+SLEEP_CHECK_SECONDS = 8.0
+# A whole utterance that is only a goodbye — handled locally, not left to the
+# model: the backup Live model heard "Bye Jarvis" as "By javas" and simply did
+# not call shutdown_jarvis (2026-10-01, 19:41). Strict on purpose: "by the way"
+# or "bye, I'll call you" do not match.
+_GOODBYE_UTTERANCE = re.compile(
+    r"^\W*(?:(?:ok(?:ay)?|alright|right)\W+)?"
+    r"(?:bye(?:\W+bye)?|by|goodbye|good\W*night|sleep|go\W+to\W+sleep|see\W+you|"
+    r"that'?s\W+all|end\W+(?:the\W+|this\W+)?session)"
+    r"(?:\W+(?:j\w{2,7}|now|for\W+now|then|later))*\W*$",
+    re.IGNORECASE,
+)
 # Laptop speakers keep playing for a moment after the last chunk is handed to
 # PortAudio. Re-opening the mic the instant playback "ends" streams JARVIS's
 # own trailing words back to Gemini, which reads them as the user talking —
@@ -886,13 +905,13 @@ class JarvisLive:
         self._standby_restore_wake_enabled = False
         # See WAKE_SETTLE_SECONDS / STANDBY_REENTRY_GUARD_SECONDS above.
         self._wake_feed_gate_open_at  = 0.0
-        # Voice ID (core/voice_id.py): None unless enabled and enrolled.
-        self._voice_gate: voice_id.VoiceGate | None = None
-        self._voice_gate_built: voice_id.VoiceGate | None = None   # kept while switched off
-        self._voice_not_ready_logged = False
-        self._voice_rejected_logged_at = 0.0
-        self._voice_enrolling = False   # mic goes nowhere while recording a profile
         self._wake_heard_at = -1e9      # last "Hey Jarvis" heard while already awake
+        # Last SLEEP_CHECK_SECONDS of the user's mic audio (int16 blocks), and a
+        # lazily loaded local Whisper, to double-check a sleep request.
+        self._recent_mic: collections.deque = collections.deque()
+        self._recent_mic_len = 0
+        self._sleep_stt = None
+        self._sleep_stt_failed = False
         # Per-reply audio health: [first arrival, last arrival, bytes] and how
         # often the speaker ran dry — tells a slow network apart from a busy CPU.
         self._reply_audio = None
@@ -903,6 +922,7 @@ class JarvisLive:
         self._fast_voice_seq = 0
         self._fast_voice_ran_turn = False
         self._fast_voice_done: tuple | None = None   # (Intent, monotonic time)
+        self._goodbye_seq = 0           # cancels a pending local goodbye when more speech arrives
         self._standby_reentry_guard_until = 0.0
         # UI control surface for the Wake Word settings section.
         self.ui.wake_is_ready    = wake_is_ready          # () -> bool
@@ -938,10 +958,6 @@ class JarvisLive:
             # be about to hear the same words as "bye Jarvis" (see _standby_allowed).
             self._wake_heard_at = time.monotonic()
             return
-        gate = self._voice_gate
-        if gate is not None and not gate.recent_is_owner():
-            self.ui.write_log("SYS: Heard 'Hey Jarvis' in a voice that isn't yours — staying asleep.")
-            return
         self.wake(reason="wake word")
 
     def wake(self, reason: str = "wake word") -> None:
@@ -962,7 +978,7 @@ class JarvisLive:
         self._last_user_speech = time.monotonic()   # start the auto-sleep clock now
         self._touch_activity()
         if not self.ui.muted:
-            self.ui.set_state("LISTENING")
+            self._show_idle()
         self.ui.write_log(f"SYS: Awake — {reason}.")
         self._maybe_brief_on_wake()
 
@@ -1058,12 +1074,54 @@ class JarvisLive:
         heard = self._last_user_text.strip()
         return f'you said "{heard[:80]}"' if heard else "bye jarvis"
 
-    def _standby_allowed(self) -> bool:
+    def _remember_mic(self, block) -> None:
+        b = np.array(block, dtype=np.int16).reshape(-1)
+        self._recent_mic.append(b)
+        self._recent_mic_len += len(b)
+        limit = int(SLEEP_CHECK_SECONDS * SEND_SAMPLE_RATE)
+        while self._recent_mic and self._recent_mic_len - len(self._recent_mic[0]) >= limit:
+            self._recent_mic_len -= len(self._recent_mic.popleft())
+
+    def _warm_sleep_check(self) -> None:
+        try:
+            if self._sleep_stt is None:
+                from core.stt import WhisperSTT
+                self._sleep_stt = WhisperSTT("tiny", "en")
+        except Exception as e:
+            print(f"[JARVIS] local sleep check unavailable: {e}")
+            self._sleep_stt_failed = True
+
+    def _local_transcript(self) -> str | None:
+        """Whisper (tiny, on this Mac) over the user's last few seconds. None
+        when faster-whisper is missing or fails — the caller then falls back
+        to Gemini's own transcript."""
+        if self._sleep_stt_failed or not self._recent_mic:
+            return None
+        try:
+            if self._sleep_stt is None:
+                from core.stt import WhisperSTT
+                self._sleep_stt = WhisperSTT("tiny", "en")
+            audio = np.concatenate(list(self._recent_mic)).astype(np.float32) / 32768.0
+            text = self._sleep_stt.transcribe(audio).strip()
+            return text or None     # heard nothing (e.g. spoke over JARVIS): use Gemini's
+        except Exception as e:
+            print(f"[JARVIS] local sleep check unavailable: {e}")
+            self._sleep_stt_failed = True
+            return None
+
+    def _standby_allowed(self, local_text: str | None = None) -> bool:
         """Guard for the model's shutdown_jarvis call — see
-        SHUTDOWN_USER_WINDOW_SECONDS."""
-        if time.monotonic() - self._wake_heard_at < WAKE_NOT_BYE_SECONDS:
-            self.ui.write_log("SYS: Ignored a sleep request — I heard 'Hey Jarvis', not 'bye Jarvis'.")
-            print("[JARVIS] 🛡️ shutdown_jarvis ignored: the wake word was just heard")
+        SHUTDOWN_USER_WINDOW_SECONDS. `local_text`: a local Whisper transcript
+        of the last few seconds, which settles "hey" vs "bye" when Gemini's
+        transcript got it wrong."""
+        print(f"[JARVIS] 🛡️ sleep request — Gemini heard {self._last_user_text[:80]!r}, "
+              f"local check heard {local_text!r}")
+        if local_text is not None:
+            if _FAREWELL_RE.search(local_text):
+                return True
+            self.ui.write_log(f'SYS: Ignored a sleep request — I heard "{local_text[:60]}", '
+                              "not a goodbye.")
+            print("[JARVIS] 🛡️ shutdown_jarvis ignored: local transcript is not a goodbye")
             return False
         if (time.monotonic() - self._last_user_speech) > SHUTDOWN_USER_WINDOW_SECONDS:
             self.ui.write_log(
@@ -1087,6 +1145,14 @@ class JarvisLive:
         self.set_speaking(False)
         self.ui.set_state("SLEEPING")
         self.ui.write_log(f"SYS: Sleeping — {reason}. Say 'Hey Jarvis' to wake me.")
+
+    @staticmethod
+    def _follow_up_seconds() -> float:
+        try:
+            v = float(get_plugin_config("listening").get("follow_up_seconds", FOLLOW_UP_SECONDS))
+            return max(10.0, v)
+        except (TypeError, ValueError):
+            return FOLLOW_UP_SECONDS
 
     async def _maybe_send_clock(self) -> None:
         """Once a minute, at a quiet moment, tell the model the time without
@@ -1116,11 +1182,6 @@ class JarvisLive:
         and keep the Live session alive while asleep."""
         while True:
             await asyncio.sleep(5)
-            # Picks up the Voice ID switch from settings without a restart.
-            try:
-                await asyncio.to_thread(self._ensure_voice_gate)
-            except Exception as e:
-                print(f"[VoiceID] ⚠️ {e}")
             await self._maybe_send_clock()
             # The Live server drops a session that has had no input for ~30 s
             # ("1008 The operation was aborted"). The failure only surfaced on
@@ -1143,8 +1204,9 @@ class JarvisLive:
                 speaking = self._is_speaking
             if speaking or self._tools_running > 0 or self._tail_active():
                 continue
-            if (time.monotonic() - self._last_activity) > self._wake_sleep_timeout:
-                self.sleep(reason="no activity for 2 minutes")
+            timeout = self._follow_up_seconds()
+            if (time.monotonic() - self._last_activity) > timeout:
+                self.sleep(reason=f"no conversation for {timeout:.0f} seconds")
 
     # ── Wake word: UI callbacks (called from the Qt thread) ──────────────────
 
@@ -1217,8 +1279,8 @@ class JarvisLive:
     # would use.
 
     def _settings_schemas(self) -> list[dict]:
-        return ([self._voice_id_settings_section(), self._input_guard_settings_section(),
-                 self._awareness_settings_section(),
+        return ([self._input_guard_settings_section(),
+                 self._awareness_settings_section(), self._listening_settings_section(),
                  self._engine_settings_section(), self._claude_settings_section(),
                   self._fast_commands_section(), self._sentiment_settings_section(),
                   self._performance_settings_section(), self._routing_settings_section(),
@@ -1514,106 +1576,6 @@ class JarvisLive:
             "values": get_plugin_config("fast_commands"),
         }
 
-    # ── Voice ID (core/voice_id.py) ───────────────────────────────────────────
-
-    def _ensure_voice_gate(self) -> None:
-        """Build the gate if Voice ID is on and enrolled. Fails open: a model
-        that will not load means no voice ID, never a deaf assistant."""
-        cfg = get_plugin_config("voice_id")
-        if not cfg.get("enabled", False):
-            if self._voice_gate is not None:
-                print("[VoiceID] 🔓 Off — every voice is sent to Gemini.")
-            self._voice_gate = None
-            return
-        built = self._voice_gate_built
-        if built is not None:
-            built.threshold = self._voice_threshold(cfg)
-            if self._voice_gate is None:
-                print("[VoiceID] 🔒 Only the enrolled voice is sent to Gemini.")
-            self._voice_gate = built
-            return
-        if not voice_id.is_ready():
-            if not self._voice_not_ready_logged:
-                self._voice_not_ready_logged = True
-                self.ui.write_log("SYS: Voice ID is on but not set up — ⚙ → PLUGIN SETTINGS → "
-                                  "VOICE ID → SET UP MY VOICE.")
-            return
-        try:
-            gate = voice_id.load_gate(self._voice_threshold(cfg), self._on_voice_decision)
-            gate.start(self._voice_sink)
-            self._voice_gate = self._voice_gate_built = gate
-            print("[VoiceID] 🔒 Only the enrolled voice is sent to Gemini.")
-        except Exception as e:
-            self._voice_gate = None
-            if not self._voice_not_ready_logged:
-                self._voice_not_ready_logged = True
-                self.ui.write_log(f"SYS: Voice ID could not start ({e}) — listening to everyone.")
-
-    @staticmethod
-    def _voice_threshold(cfg: dict) -> float:
-        try:
-            return float(cfg.get("threshold", voice_id.DEFAULT_THRESHOLD))
-        except (TypeError, ValueError):
-            return voice_id.DEFAULT_THRESHOLD
-
-    def _voice_sink(self, data: bytes) -> None:
-        """Gate thread → Live session. Reads the current loop and queue each
-        time, so the gate outlives reconnects."""
-        loop, q = self._loop, self.out_queue
-        if loop is None or q is None:
-            return
-        try:
-            loop.call_soon_threadsafe(self._enqueue_audio, {"data": data, "mime_type": "audio/pcm"})
-        except Exception:
-            pass
-
-    def _on_voice_decision(self, owner: bool, score: float) -> None:
-        print(f"[VoiceID] {'✅ owner' if owner else '🚫 other'} (match {score:.2f})")
-        if owner:
-            return
-        now = time.monotonic()
-        if now - self._voice_rejected_logged_at > 30:
-            self._voice_rejected_logged_at = now
-            self.ui.write_log(f"SYS: Ignored a voice that isn't yours (match {score:.2f}).")
-
-    def _voice_id_settings_section(self) -> dict:
-        return {
-            "plugin":    "voice_id",
-            "namespace": "voice_id",
-            "title":     "🔒 VOICE ID — only answer my voice",
-            "fields": [
-                {"key": "enabled", "type": "toggle",
-                 "label": "Only send my voice to JARVIS (others are silenced)",
-                 "default": False},
-                {"key": "threshold", "type": "text",
-                 "label": "Match threshold 0-1 (lower = more forgiving; console shows each score)",
-                 "default": str(voice_id.DEFAULT_THRESHOLD)},
-            ],
-            "values": get_plugin_config("voice_id"),
-            "action": {"label": "SET UP MY VOICE (speak for 12 s)", "run": self._setup_voice_id},
-        }
-
-    def _setup_voice_id(self, values: dict) -> tuple[bool, str]:
-        """Settings button (worker thread): install, record, enable."""
-        log = lambda m: (print(f"[VoiceID] {m}"), self.ui.write_log(f"SYS: {m}"))
-        ok, msg = voice_id.install(logger=log)
-        if not ok:
-            return False, msg
-        self._voice_enrolling = True
-        try:
-            ok, msg = voice_id.enroll(voice_id.record_mic, logger=log)
-        finally:
-            self._voice_enrolling = False
-        if not ok:
-            return False, msg
-        if self._voice_gate_built is not None:
-            self._voice_gate_built.set_profile(voice_id.load_profile())
-        self._voice_not_ready_logged = False
-        if values.get("enabled"):
-            self._ensure_voice_gate()
-            return True, msg
-        return True, "Voice recorded. Turn the switch ON and press SAVE to use it."
-
     # ── Input guard (core/input_guard.py) ─────────────────────────────────────
 
     def _input_guard_settings_section(self) -> dict:
@@ -1623,11 +1585,16 @@ class JarvisLive:
             "namespace": "input_guard",
             "title":     "⌨ INPUT GUARD — typing into other apps",
             "fields": [
+                {"key": "confirm_actions", "type": "toggle",
+                 "label": "Ask me to CONFIRM on screen first (off = JARVIS just does it): "
+                          "sending messages, Enter in chats, typing into unlisted apps, "
+                          "shutdown/restart/Wi-Fi",
+                 "default": False},
                 {"key": "enabled", "type": "toggle",
-                 "label": "Ask before typing into apps not on the list, and before sending",
+                 "label": "When asking is on: also for typing into apps not on the list",
                  "default": True},
                 {"key": "confirm_messages", "type": "toggle",
-                 "label": "Confirm every send_message (WhatsApp, Telegram…) on screen",
+                 "label": "When asking is on: also for every send_message",
                  "default": True},
                 {"key": "allowed_apps", "type": "text",
                  "label": "Apps JARVIS may type into freely (comma-separated)",
@@ -1637,6 +1604,19 @@ class JarvisLive:
                  "default": ", ".join(input_guard.DEFAULT_MESSAGING_APPS)},
             ],
             "values": get_plugin_config("input_guard"),
+        }
+
+    def _listening_settings_section(self) -> dict:
+        return {
+            "plugin":    "listening",
+            "namespace": "listening",
+            "title":     "🎙 LISTENING — when JARVIS pays attention",
+            "fields": [
+                {"key": "follow_up_seconds", "type": "text",
+                 "label": "Seconds of quiet before it needs 'Hey Jarvis' again (wake-word mode)",
+                 "default": str(int(FOLLOW_UP_SECONDS))},
+            ],
+            "values": get_plugin_config("listening"),
         }
 
     def _engine_settings_section(self) -> dict:
@@ -1834,6 +1814,31 @@ class JarvisLive:
         asyncio.run_coroutine_threadsafe(self._run_fast_intent(intent), self._loop)
         return True
 
+    def _schedule_local_goodbye(self, text: str) -> None:
+        """A transcript that is nothing but a goodbye puts JARVIS to sleep
+        here, after the same short pause as a fast command and a local
+        Whisper check that it was not "Hey Jarvis" — without waiting for the
+        model to decide to call shutdown_jarvis (which it sometimes doesn't)."""
+        self._goodbye_seq += 1
+        if not _GOODBYE_UTTERANCE.match(text or ""):
+            return
+        seq = self._goodbye_seq
+
+        async def _later():
+            await asyncio.sleep(FAST_VOICE_SETTLE_SECONDS)
+            if seq != self._goodbye_seq or not self._awake:
+                return                      # more speech, or already asleep
+            local = await asyncio.to_thread(self._local_transcript)
+            if local is not None and not _FAREWELL_RE.search(local) \
+                    and not _GOODBYE_UTTERANCE.match(local):
+                print(f"[JARVIS] 🛡️ goodbye {text!r} not confirmed — local check heard {local!r}")
+                return
+            if seq != self._goodbye_seq or not self._awake:
+                return
+            print(f"[JARVIS] 👋 Goodbye heard ({text!r}, local {local!r}) — going to sleep.")
+            self._enter_standby(reason=f'you said "{text.strip()[:40]}"')
+        asyncio.create_task(_later())
+
     def _schedule_fast_voice(self, text: str) -> None:
         """Called on every live transcript update. If the whole utterance so far
         is a fast command and nothing more is heard for
@@ -1869,7 +1874,7 @@ class JarvisLive:
         turn.mark("model_done")   # no model call on this path — marks the shortcut's own latency
         turn.finish()
         if not self.ui.muted:
-            self.ui.set_state("LISTENING")
+            self._show_idle()
 
         failed = result.startswith(("Tool '", "Unknown tool:", "Action '"))
         self.ui.write_log(f"ERR: {result}" if failed else f"JARVIS: {intent.reply}")
@@ -1940,7 +1945,13 @@ class JarvisLive:
         if value:
             self.ui.set_state("SPEAKING")
         elif not self.ui.muted:
-            self.ui.set_state("LISTENING")
+            self._show_idle()
+
+    def _show_idle(self) -> None:
+        """The HUD's resting state. Every "done speaking / tool finished" path
+        used to set LISTENING unconditionally, so JARVIS looked awake again a
+        second after "bye Jarvis" while it was in fact asleep (2026-10-01)."""
+        self.ui.set_state("SLEEPING" if (self._wake_enabled and not self._awake) else "LISTENING")
 
     def set_push_to_talk(self, enabled: bool) -> str:
         """Turn hold-to-talk on or off. Returns the scope actually achieved."""
@@ -2292,7 +2303,7 @@ class JarvisLive:
                 update_memory({category: {key: {"value": value}}})
                 print(f"[Memory] 💾 save_memory: {category}/{key} = {value}")
             if not self.ui.muted:
-                self.ui.set_state("LISTENING")
+                self._show_idle()
             return types.FunctionResponse(
                 id=fc.id, name=name,
                 response={"result": "ok", "silent": True}
@@ -2302,7 +2313,8 @@ class JarvisLive:
             # `silent: True` (see save_memory above) tells the Live API not to
             # generate a spoken turn for this — a text instruction alone is
             # not a hard enough guarantee for "zero trailing speech".
-            if not self._standby_allowed():
+            local_text = await asyncio.to_thread(self._local_transcript)
+            if not self._standby_allowed(local_text):
                 return types.FunctionResponse(
                     id=fc.id, name=name,
                     response={"result": "ignored: the user did not ask you to sleep. "
@@ -2330,7 +2342,7 @@ class JarvisLive:
             self._fast_voice_done = None
             print(f"[JARVIS] ⚡ {name} already done from speech — not repeating")
             if not self.ui.muted:
-                self.ui.set_state("LISTENING")
+                self._show_idle()
             return types.FunctionResponse(
                 id=fc.id, name=name,
                 response={"ok": True, "summary": f"Already done: {done[0].reply}",
@@ -2340,7 +2352,7 @@ class JarvisLive:
         outcome = self._apply_result_contract(name, result)
 
         if not self.ui.muted and not background:
-            self.ui.set_state("LISTENING")
+            self._show_idle()
 
         print(f"[JARVIS] 📤 {name} → {'ok' if outcome.ok else 'FAILED'}: {outcome.summary[:80]}")
         # A tool that declared itself NON_BLOCKING also says when its answer may
@@ -3047,7 +3059,10 @@ class JarvisLive:
     async def _listen_audio(self):
         print("[JARVIS] 🎤 Mic started")
         loop = asyncio.get_event_loop()
-        await asyncio.to_thread(self._ensure_voice_gate)
+        # Load the sleep-check Whisper now, off the loop, so the first
+        # "bye Jarvis" is not kept waiting for a model load.
+        if self._sleep_stt is None and not self._sleep_stt_failed:
+            loop.run_in_executor(None, self._warm_sleep_check)
 
         def callback(indata, frames, time_info, status):
             # ── Wake-word gate ───────────────────────────────────────────────
@@ -3064,19 +3079,17 @@ class JarvisLive:
                 # the acoustic tail of the utterance that just put it to
                 # sleep ("...jarvis" fading out), which can score as a fresh
                 # "Hey Jarvis" and wake it right back up.
-                if det is not None and time.monotonic() >= self._wake_feed_gate_open_at:
+                # Not while our own voice is still coming out of the speakers:
+                # a reply finishing after "bye Jarvis" woke it straight back up
+                # (2026-10-01, 19:58).
+                if (det is not None and time.monotonic() >= self._wake_feed_gate_open_at
+                        and not self._is_speaking and not self._tail_active()):
                     det.feed(indata)
-                    gate = self._voice_gate
-                    if gate is not None:
-                        gate.note_recent(indata)
                 return
-            if self._voice_enrolling:
-                return
-            # Awake too, the detector hears every frame — only to tell a
-            # repeated "Hey Jarvis" apart from a goodbye (WAKE_NOT_BYE_SECONDS).
-            det = self._wake_detector
-            if det is not None and self._wake_enabled and not self._is_speaking:
-                det.feed(indata)     # not while JARVIS talks: no need, and it costs CPU mid-playback
+            # Keep the user's last few seconds for checking a sleep request
+            # (SLEEP_CHECK_SECONDS) — a copy and an append, nothing more.
+            if not self._is_speaking:
+                self._remember_mic(indata)
             with self._speaking_lock:
                 jarvis_speaking = self._is_speaking
 
@@ -3125,16 +3138,10 @@ class JarvisLive:
                 return
             
             if not self.ui.muted and not self._phone_active:
-                gate = self._voice_gate
-                if gate is not None:
-                    # Voice ID decides on its own thread and sends (or
-                    # silences) through _voice_sink.
-                    gate.feed(indata)
-                else:
-                    loop.call_soon_threadsafe(
-                        self._enqueue_audio,
-                        {"data": indata.tobytes(), "mime_type": "audio/pcm"}
-                    )
+                loop.call_soon_threadsafe(
+                    self._enqueue_audio,
+                    {"data": indata.tobytes(), "mime_type": "audio/pcm"}
+                )
                 # Feed the live mic level to the HUD so the waveform reacts to
                 # the user's actual voice while listening. Purely cosmetic — any
                 # failure here must never disturb the mic.
@@ -3260,8 +3267,8 @@ class JarvisLive:
 
                     if response.data:
                         self._generating = True
-                        if self._interrupted:
-                            pass  # discard: interrupted
+                        if self._interrupted or (self._wake_enabled and not self._awake):
+                            pass  # discard: interrupted, or asleep (a reply to "bye" stays unsaid)
                         else:
                             if self._turn_done_event and self._turn_done_event.is_set():
                                 self._turn_done_event.clear()
@@ -3310,6 +3317,7 @@ class JarvisLive:
                                 in_buf.append(txt)
                                 self._note_user_input(" ".join(in_buf))
                                 self._schedule_fast_voice(" ".join(in_buf))
+                                self._schedule_local_goodbye(" ".join(in_buf))
 
                         if sc.turn_complete:
                             if self._turn_done_event:
@@ -3626,7 +3634,7 @@ class JarvisLive:
         if reconnect and self._awake:
             self._touch_activity()
             if not self.ui.muted:
-                self.ui.set_state("LISTENING")
+                self._show_idle()
             self.ui.write_log("SYS: Reconnected — still awake.")
         elif self._wake_enabled:
             self._ensure_wake_detector()
@@ -3635,7 +3643,7 @@ class JarvisLive:
             self.ui.write_log("SYS: JARVIS online — sleeping. Say 'Hey Jarvis' to wake me.")
         else:
             self._awake = True
-            self.ui.set_state("LISTENING")
+            self._show_idle()
             self.ui.write_log("SYS: JARVIS online.")
 
     async def _send_startup_briefing(self) -> None:
@@ -4647,7 +4655,7 @@ class JarvisLive:
                 continue
 
             if not self.ui.muted:
-                self.ui.set_state("LISTENING")
+                self._show_idle()
             try:
                 audio = await self._record_utterance()
             except Exception as e:
@@ -4819,7 +4827,7 @@ class JarvisLive:
                 messages.append({"role": "assistant", "content": reply})
 
             if not self.ui.muted:
-                self.ui.set_state("LISTENING")
+                self._show_idle()
 
 def main():
     ui = JarvisUI("face.png")

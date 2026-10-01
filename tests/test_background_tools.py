@@ -57,7 +57,6 @@ class BackgroundToolTest(unittest.TestCase):
 
         def sleep_check(j):
             j._last_activity -= main.WAKE_SLEEP_TIMEOUT + 1
-            j._ensure_voice_gate = lambda: None
 
         play(j, [tool_call("web_search", {"query": "x"}), sleep_check, pause(0.4)])
         # The tool finishing counts as activity, so the clock restarted.

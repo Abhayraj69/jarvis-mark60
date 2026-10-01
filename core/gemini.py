@@ -232,6 +232,42 @@ def _cool(model: str, seconds: float = _COOLDOWN_SECONDS) -> None:
         _cooldown[model] = time.monotonic() + seconds
 
 
+# Live models resting off a failure are remembered across restarts. Without
+# this every restart retried a model that was failing with 1011 on Google's
+# side, costing three failed connects before stepping down the ladder again
+# (2026-10-01). Wall-clock times on disk; monotonic in memory.
+LIVE_REST_FILE = Path(__file__).resolve().parent.parent / "memory" / "live_model_rest.json"
+
+
+def _save_live_rest() -> None:
+    now_m, now_w = time.monotonic(), time.time()
+    with _cool_lock:
+        data = {m: now_w + (until - now_m) for m, until in _cooldown.items()
+                if m in LIVE_MODELS and until > now_m}
+    try:
+        LIVE_REST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        LIVE_REST_FILE.write_text(json.dumps(data), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _load_live_rest() -> None:
+    try:
+        data = json.loads(LIVE_REST_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return
+    now_m, now_w = time.monotonic(), time.time()
+    with _cool_lock:
+        for m, until_w in data.items():
+            if m in LIVE_MODELS and until_w > now_w:
+                _cooldown[m] = now_m + (until_w - now_w)
+                print(f"[Gemini] {m.split('/')[-1]} is still resting after an earlier "
+                      f"failure — {int((until_w - now_w) // 60)} min left; using the next model.")
+
+
+_load_live_rest()
+
+
 def is_quota_error(err: str) -> bool:
     return "429" in err or "RESOURCE_EXHAUSTED" in err
 
@@ -296,11 +332,13 @@ def note_live_failure(model: str, err: str) -> bool:
     """
     if is_quota_error(err):
         _cool(model, _COOLDOWN_SECONDS)
+        _save_live_rest()
         print(f"[Gemini] Live model {model} is out of quota — "
               f"switching for {_COOLDOWN_SECONDS // 60} minutes.")
         return True
     if is_gone_error(err):
         _cool(model, _GONE_SECONDS)
+        _save_live_rest()
         print(f"[Gemini] Live model {model} is unavailable to this key — "
               f"setting it aside.")
         return True
@@ -312,6 +350,7 @@ def note_live_failure(model: str, err: str) -> bool:
         if len(hits) >= _INTERNAL_STRIKES:
             _internal_hits.pop(model, None)
             _cool(model, _INTERNAL_REST_SECONDS)
+            _save_live_rest()
             print(f"[Gemini] Live model {model} keeps failing with internal "
                   f"errors — switching for {_INTERNAL_REST_SECONDS // 60} minutes.")
             return True
